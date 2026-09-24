@@ -1,0 +1,116 @@
+{
+  "adapter": "knolo.micro.v1",
+  "artifactRoot": "sha256-5e87ff26c8bf882085dd3ca167849d6a359a22a08949cfe7519f94aba163185b",
+  "blockSize": 16,
+  "cases": [
+    {
+      "greedyTokens": [
+        13,
+        6,
+        5,
+        7
+      ],
+      "marginHex": "3f2b9c4a",
+      "name": "three",
+      "newTokens": 4,
+      "prefillLogitsHex": [
+        "be4200f6",
+        "3e9678c9",
+        "3f91ea70",
+        "be81f266",
+        "3fc3b3a8",
+        "3f4b0d22",
+        "3f194f83",
+        "be8a0a0e",
+        "3faeeafa",
+        "bf5b14e0",
+        "3f2d97c5",
+        "bf99237a",
+        "bff3aa17",
+        "401a611a",
+        "beae3e85",
+        "3fdef40f"
+      ],
+      "prompt": [
+        1,
+        4,
+        7
+      ]
+    },
+    {
+      "greedyTokens": [
+        11,
+        11
+      ],
+      "marginHex": "3f60f910",
+      "name": "bos",
+      "newTokens": 2,
+      "prefillLogitsHex": [
+        "3fa5a0f0",
+        "bf0a598e",
+        "bb167c90",
+        "3f80da76",
+        "bf17e81f",
+        "3f98b5d9",
+        "3e907bd2",
+        "bf403b00",
+        "bffaa3ae",
+        "c01ad099",
+        "3ecb457c",
+        "400b0ebc",
+        "3fa0883d",
+        "bee6dcaf",
+        "c0192f1f",
+        "bdefd08e"
+      ],
+      "prompt": [
+        1
+      ]
+    },
+    {
+      "greedyTokens": [
+        7,
+        15,
+        10
+      ],
+      "marginHex": "3f80caba",
+      "name": "repeat",
+      "newTokens": 3,
+      "prefillLogitsHex": [
+        "3efe1dde",
+        "bed1f460",
+        "3eafff15",
+        "bff84424",
+        "3cfbbe48",
+        "bf0b09da",
+        "bf341d67",
+        "40168ea7",
+        "3fac5294",
+        "bfb46576",
+        "bfa69eb2",
+        "3e85bf13",
+        "3d977e2c",
+        "3e1de752",
+        "be664578",
+        "3ee4b2b6"
+      ],
+      "prompt": [
+        15,
+        15,
+        2,
+        3,
+        8
+      ]
+    }
+  ],
+  "family": "micro",
+  "logitAbsTolerance": "1e-4",
+  "logitAbsToleranceMillionths": 100,
+  "modelImageRoot": "sha256-adb3bbc7c0d36670a9aa859e3030a09fce26dc3701d5b5495abd6362b999a392",
+  "referenceBackend": "reference-f32",
+  "runtimeRoot": "sha256-54d94495f8ee9b4863c28792f5a4ee9bc80e27ca3b4567a03886694ddd355134",
+  "supportLevel": "experimental",
+  "tieBreak": "lowest-index",
+  "vocab": 16,
+  "weightSha256": "sha256-3834fa8d4850add3b85be7de5d66ca278c5c61c128b6a5dcd3b19ff2bcd481b0"
+}
