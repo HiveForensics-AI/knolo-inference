@@ -1,4 +1,5 @@
 mod admission;
+mod assurance;
 mod boundary;
 mod census;
 mod common;
@@ -7,11 +8,15 @@ mod continuity;
 mod demo;
 mod execution;
 mod exposure;
+mod gate;
+mod incident;
 mod lifecycle;
 mod model;
+mod preflight;
 mod product;
 mod prompt;
 mod receipt;
+mod refusal;
 mod release;
 mod resilience;
 mod runtime;
@@ -19,6 +24,10 @@ mod runtime;
 pub use admission::{
     ConcurrentLoadReportV1, DuplicateReportV1, EvictionReportV1, PointReportV1,
     MAX_ADMISSION_REQUESTS,
+};
+pub use assurance::{
+    ChallengeReportV1, DrainingReportV1, ReplayEnvironmentReportV1, ReplayOutputReportV1,
+    WorkerLostReportV1, HTTP_SERVICE_UNAVAILABLE,
 };
 pub use boundary::{
     ApiReportV1, HostKeyReportV1, ReceiptKeyReportV1, SandboxReportV1, MAX_API_BODY, MAX_API_RATE,
@@ -51,12 +60,25 @@ pub use exposure::{
     CacheChannelReportV1, EquationReportV1, RedactionReportV1, SafeErrorReportV1,
     ED25519_PUBLIC_KEY_BYTES, ED25519_SIGNATURE_BYTES,
 };
+pub use gate::{
+    ContextLimitReportV1, ImageInvalidReportV1, ImageSignatureReportV1, PromptCompilationReportV1,
+    SignatureCheckReportV1, MAX_CONTEXT_PROMPT, MAX_REJECTED_TOKEN, MAX_SIGNATURE_RECORD_BYTES,
+    MAX_SIGNATURE_RECORD_COUNT,
+};
+pub use incident::{
+    EqualityReportV1, FaultReportV1, OomReportV1, TimeoutReportV1, WorkerStartReportV1,
+    HTTP_TIMEOUT_STATUS,
+};
 pub use lifecycle::{
     model_swap_nanos, LoadReportV1, SwapReportV1, VerificationReportV1, MAX_VERIFIED_BYTES,
 };
 pub use model::{
     ArchitectureRefV1, LicenseV1, ModelArtifactSetV1, ModelImageV1, PlacementHintsV1,
     ResourceRequirementsV1, SourceHintV1, TensorSpecV1, MODEL_IMAGE_KIND,
+};
+pub use preflight::{
+    ArchitectureReportV1, DigestMismatchReportV1, ScalarReportV1, TemplateInvalidReportV1,
+    TokenizerInvalidReportV1,
 };
 pub use product::{
     AgentEffectReportV1, CompositionReportV1, HubReportV1, StudioReportV1, LOCAL_WEIGHT_SOURCE,
@@ -76,6 +98,10 @@ pub use receipt::{
     PromptReceiptBindingV1, ReplayCheckReceiptV1, SamplerReceiptBindingV1, ThroughputReportV1,
     TimingReceiptV1, FUZZ_MUTATIONS_PER_SEED, FUZZ_MUTATION_COUNT, FUZZ_SEED_COUNT, FUZZ_TARGETS,
 };
+pub use refusal::{
+    KernelReportV1, MemoryRefusalReportV1, PlacementRefusalReportV1, PublicReportV1,
+    QuantizationReportV1,
+};
 pub use release::{
     BinaryReportV1, ReleaseReportV1, ReproducibleReportV1, SignatureReportV1, MAX_BINARY_BYTES,
     MAX_BUILD_INSTRUCTIONS, SUPERVISOR_BINARY, WORKER_BINARY,
@@ -94,6 +120,9 @@ use crate::error::{fail, ErrorCode, InferFailure};
 use crate::fields::Fields;
 
 use admission::{CONCURRENT_LOAD_KIND, DUPLICATE_KIND, EVICTION_KIND, POINT_KIND};
+use assurance::{
+    CHALLENGE_KIND, DRAINING_KIND, REPLAY_ENVIRONMENT_KIND, REPLAY_OUTPUT_KIND, WORKER_LOST_KIND,
+};
 use boundary::{API_KIND, HOST_KEY_KIND, RECEIPT_KEY_KIND, SANDBOX_KIND};
 use census::{KV_KIND, PEAK_KIND, PREFIX_KIND};
 use compare::{LLAMA_KIND, MISTRAL_KIND, RECIPE_KIND, VLLM_KIND};
@@ -104,14 +133,26 @@ use execution::{
     SAMPLER_PLAN_KIND,
 };
 use exposure::{CACHE_CHANNEL_KIND, EQUATION_KIND, REDACTION_KIND, SAFE_ERROR_KIND};
+use gate::{
+    CONTEXT_LIMIT_KIND, IMAGE_INVALID_KIND, IMAGE_SIGNATURE_KIND, PROMPT_COMPILATION_KIND,
+    SIGNATURE_CHECK_KIND,
+};
+use incident::{EQUALITY_KIND, FAULT_KIND, OOM_KIND, TIMEOUT_KIND, WORKER_START_KIND};
 use lifecycle::{LOAD_KIND, SWAP_KIND, VERIFICATION_KIND};
 use model::MODEL_ARTIFACT_KIND;
+use preflight::{
+    ARCHITECTURE_KIND, DIGEST_MISMATCH_KIND, SCALAR_KIND, TEMPLATE_INVALID_KIND,
+    TOKENIZER_INVALID_KIND,
+};
 use product::{AGENT_EFFECT_KIND, COMPOSITION_KIND, HUB_KIND, STUDIO_KIND};
 use prompt::{EVIDENCE_KIND, PROMPT_INPUT_KIND, PROMPT_PLAN_KIND};
 use receipt::{
     CANCELLATION_KIND, CONFORMANCE_KIND, CONVERSION_KIND, FINALIZATION_KIND, FUZZ_KIND,
     LATENCY_KIND, MEMORY_KIND, OVERHEAD_KIND, PERPLEXITY_KIND, RECEIPT_KIND, REPLAY_KIND,
     THROUGHPUT_KIND,
+};
+use refusal::{
+    KERNEL_KIND, MEMORY_REFUSAL_KIND, PLACEMENT_REFUSAL_KIND, PUBLIC_KIND, QUANTIZATION_KIND,
 };
 use release::{BINARY_KIND, RELEASE_KIND, REPRODUCIBLE_KIND, SIGNATURE_KIND};
 use resilience::{BASE_KIND, DISK_KIND, RESTART_KIND, UNLOAD_KIND};
@@ -189,6 +230,31 @@ pub enum Contract {
     DuplicateReport(DuplicateReportV1),
     ConcurrentLoadReport(ConcurrentLoadReportV1),
     EvictionReport(EvictionReportV1),
+    EqualityReport(EqualityReportV1),
+    OomReport(OomReportV1),
+    FaultReport(FaultReportV1),
+    TimeoutReport(TimeoutReportV1),
+    WorkerStartReport(WorkerStartReportV1),
+    ChallengeReport(ChallengeReportV1),
+    ReplayEnvironmentReport(ReplayEnvironmentReportV1),
+    ReplayOutputReport(ReplayOutputReportV1),
+    WorkerLostReport(WorkerLostReportV1),
+    DrainingReport(DrainingReportV1),
+    ScalarReport(ScalarReportV1),
+    DigestMismatchReport(DigestMismatchReportV1),
+    TokenizerInvalidReport(TokenizerInvalidReportV1),
+    TemplateInvalidReport(TemplateInvalidReportV1),
+    ArchitectureReport(ArchitectureReportV1),
+    PublicReport(PublicReportV1),
+    QuantizationReport(QuantizationReportV1),
+    KernelReport(KernelReportV1),
+    PlacementRefusalReport(PlacementRefusalReportV1),
+    MemoryRefusalReport(MemoryRefusalReportV1),
+    SignatureCheckReport(SignatureCheckReportV1),
+    ContextLimitReport(ContextLimitReportV1),
+    PromptCompilationReport(PromptCompilationReportV1),
+    ImageInvalidReport(ImageInvalidReportV1),
+    ImageSignatureReport(ImageSignatureReportV1),
 }
 
 impl Contract {
@@ -312,6 +378,63 @@ impl Contract {
                 ConcurrentLoadReportV1::from_cbor(value)?,
             )),
             EVICTION_KIND => Ok(Self::EvictionReport(EvictionReportV1::from_cbor(value)?)),
+            EQUALITY_KIND => Ok(Self::EqualityReport(EqualityReportV1::from_cbor(value)?)),
+            OOM_KIND => Ok(Self::OomReport(OomReportV1::from_cbor(value)?)),
+            FAULT_KIND => Ok(Self::FaultReport(FaultReportV1::from_cbor(value)?)),
+            TIMEOUT_KIND => Ok(Self::TimeoutReport(TimeoutReportV1::from_cbor(value)?)),
+            WORKER_START_KIND => Ok(Self::WorkerStartReport(WorkerStartReportV1::from_cbor(
+                value,
+            )?)),
+            CHALLENGE_KIND => Ok(Self::ChallengeReport(ChallengeReportV1::from_cbor(value)?)),
+            REPLAY_ENVIRONMENT_KIND => Ok(Self::ReplayEnvironmentReport(
+                ReplayEnvironmentReportV1::from_cbor(value)?,
+            )),
+            REPLAY_OUTPUT_KIND => Ok(Self::ReplayOutputReport(ReplayOutputReportV1::from_cbor(
+                value,
+            )?)),
+            WORKER_LOST_KIND => Ok(Self::WorkerLostReport(WorkerLostReportV1::from_cbor(
+                value,
+            )?)),
+            DRAINING_KIND => Ok(Self::DrainingReport(DrainingReportV1::from_cbor(value)?)),
+            SCALAR_KIND => Ok(Self::ScalarReport(ScalarReportV1::from_cbor(value)?)),
+            DIGEST_MISMATCH_KIND => Ok(Self::DigestMismatchReport(
+                DigestMismatchReportV1::from_cbor(value)?,
+            )),
+            TOKENIZER_INVALID_KIND => Ok(Self::TokenizerInvalidReport(
+                TokenizerInvalidReportV1::from_cbor(value)?,
+            )),
+            TEMPLATE_INVALID_KIND => Ok(Self::TemplateInvalidReport(
+                TemplateInvalidReportV1::from_cbor(value)?,
+            )),
+            ARCHITECTURE_KIND => Ok(Self::ArchitectureReport(ArchitectureReportV1::from_cbor(
+                value,
+            )?)),
+            PUBLIC_KIND => Ok(Self::PublicReport(PublicReportV1::from_cbor(value)?)),
+            QUANTIZATION_KIND => Ok(Self::QuantizationReport(QuantizationReportV1::from_cbor(
+                value,
+            )?)),
+            KERNEL_KIND => Ok(Self::KernelReport(KernelReportV1::from_cbor(value)?)),
+            PLACEMENT_REFUSAL_KIND => Ok(Self::PlacementRefusalReport(
+                PlacementRefusalReportV1::from_cbor(value)?,
+            )),
+            MEMORY_REFUSAL_KIND => Ok(Self::MemoryRefusalReport(MemoryRefusalReportV1::from_cbor(
+                value,
+            )?)),
+            SIGNATURE_CHECK_KIND => Ok(Self::SignatureCheckReport(
+                SignatureCheckReportV1::from_cbor(value)?,
+            )),
+            CONTEXT_LIMIT_KIND => Ok(Self::ContextLimitReport(ContextLimitReportV1::from_cbor(
+                value,
+            )?)),
+            PROMPT_COMPILATION_KIND => Ok(Self::PromptCompilationReport(
+                PromptCompilationReportV1::from_cbor(value)?,
+            )),
+            IMAGE_INVALID_KIND => Ok(Self::ImageInvalidReport(ImageInvalidReportV1::from_cbor(
+                value,
+            )?)),
+            IMAGE_SIGNATURE_KIND => Ok(Self::ImageSignatureReport(
+                ImageSignatureReportV1::from_cbor(value)?,
+            )),
             _ => Err(fail(ErrorCode::ContractInvalid, "unexpected contract kind")),
         }
     }
@@ -386,6 +509,31 @@ impl Contract {
             Self::DuplicateReport(_) => DUPLICATE_KIND,
             Self::ConcurrentLoadReport(_) => CONCURRENT_LOAD_KIND,
             Self::EvictionReport(_) => EVICTION_KIND,
+            Self::EqualityReport(_) => EQUALITY_KIND,
+            Self::OomReport(_) => OOM_KIND,
+            Self::FaultReport(_) => FAULT_KIND,
+            Self::TimeoutReport(_) => TIMEOUT_KIND,
+            Self::WorkerStartReport(_) => WORKER_START_KIND,
+            Self::ChallengeReport(_) => CHALLENGE_KIND,
+            Self::ReplayEnvironmentReport(_) => REPLAY_ENVIRONMENT_KIND,
+            Self::ReplayOutputReport(_) => REPLAY_OUTPUT_KIND,
+            Self::WorkerLostReport(_) => WORKER_LOST_KIND,
+            Self::DrainingReport(_) => DRAINING_KIND,
+            Self::ScalarReport(_) => SCALAR_KIND,
+            Self::DigestMismatchReport(_) => DIGEST_MISMATCH_KIND,
+            Self::TokenizerInvalidReport(_) => TOKENIZER_INVALID_KIND,
+            Self::TemplateInvalidReport(_) => TEMPLATE_INVALID_KIND,
+            Self::ArchitectureReport(_) => ARCHITECTURE_KIND,
+            Self::PublicReport(_) => PUBLIC_KIND,
+            Self::QuantizationReport(_) => QUANTIZATION_KIND,
+            Self::KernelReport(_) => KERNEL_KIND,
+            Self::PlacementRefusalReport(_) => PLACEMENT_REFUSAL_KIND,
+            Self::MemoryRefusalReport(_) => MEMORY_REFUSAL_KIND,
+            Self::SignatureCheckReport(_) => SIGNATURE_CHECK_KIND,
+            Self::ContextLimitReport(_) => CONTEXT_LIMIT_KIND,
+            Self::PromptCompilationReport(_) => PROMPT_COMPILATION_KIND,
+            Self::ImageInvalidReport(_) => IMAGE_INVALID_KIND,
+            Self::ImageSignatureReport(_) => IMAGE_SIGNATURE_KIND,
         }
     }
 
@@ -459,6 +607,31 @@ impl Contract {
             Self::DuplicateReport(v) => v.to_bytes(),
             Self::ConcurrentLoadReport(v) => v.to_bytes(),
             Self::EvictionReport(v) => v.to_bytes(),
+            Self::EqualityReport(v) => v.to_bytes(),
+            Self::OomReport(v) => v.to_bytes(),
+            Self::FaultReport(v) => v.to_bytes(),
+            Self::TimeoutReport(v) => v.to_bytes(),
+            Self::WorkerStartReport(v) => v.to_bytes(),
+            Self::ChallengeReport(v) => v.to_bytes(),
+            Self::ReplayEnvironmentReport(v) => v.to_bytes(),
+            Self::ReplayOutputReport(v) => v.to_bytes(),
+            Self::WorkerLostReport(v) => v.to_bytes(),
+            Self::DrainingReport(v) => v.to_bytes(),
+            Self::ScalarReport(v) => v.to_bytes(),
+            Self::DigestMismatchReport(v) => v.to_bytes(),
+            Self::TokenizerInvalidReport(v) => v.to_bytes(),
+            Self::TemplateInvalidReport(v) => v.to_bytes(),
+            Self::ArchitectureReport(v) => v.to_bytes(),
+            Self::PublicReport(v) => v.to_bytes(),
+            Self::QuantizationReport(v) => v.to_bytes(),
+            Self::KernelReport(v) => v.to_bytes(),
+            Self::PlacementRefusalReport(v) => v.to_bytes(),
+            Self::MemoryRefusalReport(v) => v.to_bytes(),
+            Self::SignatureCheckReport(v) => v.to_bytes(),
+            Self::ContextLimitReport(v) => v.to_bytes(),
+            Self::PromptCompilationReport(v) => v.to_bytes(),
+            Self::ImageInvalidReport(v) => v.to_bytes(),
+            Self::ImageSignatureReport(v) => v.to_bytes(),
         }
     }
 }

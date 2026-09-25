@@ -1507,6 +1507,527 @@ fn contracts_roundtrip_reject_and_export_vectors() {
         validation_result: "recorded".into(),
         extensions: ext(),
     };
+    let equality = EqualityReportV1 {
+        engine_build_root: engine.root().unwrap(),
+        placement_root: raw(b"placement-plan"),
+        release_root: raw(b"release"),
+        message_root: raw(b"message"),
+        equality_status: "equal".into(),
+        points_compared: true,
+        points_equal: true,
+        challenge_hashed: false,
+        public_key_bytes: ED25519_PUBLIC_KEY_BYTES,
+        signature_bytes: ED25519_SIGNATURE_BYTES,
+        scalar_bytes: ED25519_SCALAR_BYTES,
+        key_material_present: false,
+        execution_mode: "isolated-replay".into(),
+        cache_policy: "off".into(),
+        concurrency: 1,
+        run_count: 1,
+        warm_state: "cold".into(),
+        request_count: 1,
+        validation_result: "verified".into(),
+        extensions: ext(),
+    };
+    let oom = OomReportV1 {
+        engine_build_root: engine.root().unwrap(),
+        placement_root: raw(b"placement-plan"),
+        device: "slot-0".into(),
+        free_bytes: 0,
+        needed_bytes: 4096,
+        code: "CUDA_OOM".into(),
+        retryable: true,
+        receipt_stored: false,
+        listener_up: true,
+        supervisor_exited: false,
+        cpu_fallback: false,
+        execution_mode: "isolated-replay".into(),
+        cache_policy: "off".into(),
+        concurrency: 1,
+        run_count: 1,
+        warm_state: "cold".into(),
+        request_count: 1,
+        validation_result: "recorded".into(),
+        extensions: ext(),
+    };
+    let fault = FaultReportV1 {
+        engine_build_root: engine.root().unwrap(),
+        placement_root: raw(b"placement-plan"),
+        device: "slot-0".into(),
+        fault_class: "kernel".into(),
+        code: "CUDA_FAULT".into(),
+        retryable: false,
+        receipt_stored: false,
+        listener_up: true,
+        supervisor_exited: false,
+        cpu_fallback: false,
+        graph_captured: false,
+        execution_mode: "isolated-replay".into(),
+        cache_policy: "off".into(),
+        concurrency: 1,
+        run_count: 1,
+        warm_state: "cold".into(),
+        request_count: 1,
+        validation_result: "recorded".into(),
+        extensions: ext(),
+    };
+    let timeout = TimeoutReportV1 {
+        engine_build_root: engine.root().unwrap(),
+        placement_root: raw(b"placement-plan"),
+        request_id: "req-1".into(),
+        timeout_stage: "completion".into(),
+        waited_nanos: 1_000,
+        code: "REQUEST_TIMEOUT".into(),
+        retryable: true,
+        receipt_stored: false,
+        listener_up: true,
+        worker_lost: false,
+        http_status: HTTP_TIMEOUT_STATUS,
+        execution_mode: "isolated-replay".into(),
+        cache_policy: "off".into(),
+        concurrency: 1,
+        run_count: 1,
+        warm_state: "cold".into(),
+        request_count: 1,
+        validation_result: "recorded".into(),
+        extensions: ext(),
+    };
+    let worker_start = WorkerStartReportV1 {
+        engine_build_root: engine.root().unwrap(),
+        placement_root: raw(b"placement-plan"),
+        start_failure: "not-ready".into(),
+        code: "WORKER_START_FAILED".into(),
+        retryable: true,
+        receipt_stored: false,
+        listener_up: true,
+        process_spawned: true,
+        worker_ready: false,
+        restart_count: 0,
+        execution_mode: "isolated-replay".into(),
+        cache_policy: "off".into(),
+        concurrency: 1,
+        run_count: 1,
+        warm_state: "cold".into(),
+        request_count: 1,
+        validation_result: "recorded".into(),
+        extensions: ext(),
+    };
+    let challenge = ChallengeReportV1 {
+        engine_build_root: engine.root().unwrap(),
+        placement_root: raw(b"placement-plan"),
+        release_root: raw(b"release"),
+        message_root: raw(b"message"),
+        challenge_status: "hashed".into(),
+        challenge_hashed: true,
+        scalar_reduced: false,
+        public_key_bytes: ED25519_PUBLIC_KEY_BYTES,
+        signature_bytes: ED25519_SIGNATURE_BYTES,
+        scalar_bytes: ED25519_SCALAR_BYTES,
+        key_material_present: false,
+        execution_mode: "isolated-replay".into(),
+        cache_policy: "off".into(),
+        concurrency: 1,
+        run_count: 1,
+        warm_state: "cold".into(),
+        request_count: 1,
+        validation_result: "verified".into(),
+        extensions: ext(),
+    };
+    let replay_environment = ReplayEnvironmentReportV1 {
+        engine_build_root: engine.root().unwrap(),
+        placement_root: raw(b"placement-plan"),
+        receipt_root: raw(b"receipt"),
+        mismatched_field: "engine".into(),
+        code: "REPLAY_ENVIRONMENT_MISMATCH".into(),
+        retryable: false,
+        check_stored: false,
+        forward_ran: false,
+        output_compared: false,
+        assurance: "incomplete".into(),
+        execution_mode: "isolated-replay".into(),
+        cache_policy: "off".into(),
+        concurrency: 1,
+        run_count: 1,
+        warm_state: "cold".into(),
+        request_count: 1,
+        validation_result: "recorded".into(),
+        extensions: ext(),
+    };
+    let replay_output = ReplayOutputReportV1 {
+        engine_build_root: engine.root().unwrap(),
+        placement_root: raw(b"placement-plan"),
+        receipt_root: raw(b"receipt"),
+        candidate_output_root: raw(b"candidate"),
+        code: "REPLAY_OUTPUT_MISMATCH".into(),
+        retryable: false,
+        check_stored: false,
+        forward_ran: true,
+        environment_matched: true,
+        assurance: "incomplete".into(),
+        execution_mode: "isolated-replay".into(),
+        cache_policy: "off".into(),
+        concurrency: 1,
+        run_count: 1,
+        warm_state: "cold".into(),
+        request_count: 1,
+        validation_result: "recorded".into(),
+        extensions: ext(),
+    };
+    let worker_lost = WorkerLostReportV1 {
+        engine_build_root: engine.root().unwrap(),
+        placement_root: raw(b"placement-plan"),
+        request_id: "req-1".into(),
+        code: "WORKER_LOST".into(),
+        retryable: true,
+        receipt_stored: false,
+        listener_up: true,
+        supervisor_exited: false,
+        http_status: HTTP_SERVICE_UNAVAILABLE,
+        journal_sealed: true,
+        restart_counted: true,
+        execution_mode: "isolated-replay".into(),
+        cache_policy: "off".into(),
+        concurrency: 1,
+        run_count: 1,
+        warm_state: "cold".into(),
+        request_count: 1,
+        validation_result: "recorded".into(),
+        extensions: ext(),
+    };
+    let draining = DrainingReportV1 {
+        engine_build_root: engine.root().unwrap(),
+        placement_root: raw(b"placement-plan"),
+        lifecycle: "draining".into(),
+        code: "SERVICE_DRAINING".into(),
+        retryable: true,
+        receipt_stored: false,
+        body_parsed: false,
+        listener_up: true,
+        worker_loaded: true,
+        restart_counted: false,
+        http_status: HTTP_SERVICE_UNAVAILABLE,
+        execution_mode: "isolated-replay".into(),
+        cache_policy: "off".into(),
+        concurrency: 1,
+        run_count: 1,
+        warm_state: "cold".into(),
+        request_count: 1,
+        validation_result: "recorded".into(),
+        extensions: ext(),
+    };
+    let scalar = ScalarReportV1 {
+        engine_build_root: engine.root().unwrap(),
+        placement_root: raw(b"placement-plan"),
+        release_root: raw(b"release"),
+        message_root: raw(b"message"),
+        scalar_status: "reduced".into(),
+        scalar_reduced: true,
+        public_multiplied: false,
+        public_key_bytes: ED25519_PUBLIC_KEY_BYTES,
+        signature_bytes: ED25519_SIGNATURE_BYTES,
+        scalar_bytes: ED25519_SCALAR_BYTES,
+        key_material_present: false,
+        execution_mode: "isolated-replay".into(),
+        cache_policy: "off".into(),
+        concurrency: 1,
+        run_count: 1,
+        warm_state: "cold".into(),
+        request_count: 1,
+        validation_result: "verified".into(),
+        extensions: ext(),
+    };
+    let digest_mismatch = DigestMismatchReportV1 {
+        engine_build_root: engine.root().unwrap(),
+        placement_root: raw(b"placement-plan"),
+        artifact_root: raw(b"artifact"),
+        mismatch: "digest".into(),
+        code: "MODEL_DIGEST_MISMATCH".into(),
+        retryable: false,
+        header_parsed: false,
+        body_read: true,
+        forward_ran: false,
+        receipt_stored: false,
+        execution_mode: "isolated-replay".into(),
+        cache_policy: "off".into(),
+        concurrency: 1,
+        run_count: 1,
+        warm_state: "cold".into(),
+        request_count: 1,
+        validation_result: "recorded".into(),
+        extensions: ext(),
+    };
+    let tokenizer_invalid = TokenizerInvalidReportV1 {
+        engine_build_root: engine.root().unwrap(),
+        placement_root: raw(b"placement-plan"),
+        tokenizer_root: raw(b"tokenizer"),
+        failure: "encode".into(),
+        code: "TOKENIZER_INVALID".into(),
+        retryable: false,
+        tokenizer_parsed: true,
+        template_rendered: true,
+        prompt_compiled: false,
+        forward_ran: false,
+        receipt_stored: false,
+        execution_mode: "isolated-replay".into(),
+        cache_policy: "off".into(),
+        concurrency: 1,
+        run_count: 1,
+        warm_state: "cold".into(),
+        request_count: 1,
+        validation_result: "recorded".into(),
+        extensions: ext(),
+    };
+    let template_invalid = TemplateInvalidReportV1 {
+        engine_build_root: engine.root().unwrap(),
+        placement_root: raw(b"placement-plan"),
+        template_root: raw(b"template"),
+        failure: "grammar".into(),
+        code: "TEMPLATE_INVALID".into(),
+        retryable: false,
+        template_rendered: false,
+        tokenizer_parsed: false,
+        prompt_compiled: false,
+        forward_ran: false,
+        receipt_stored: false,
+        execution_mode: "isolated-replay".into(),
+        cache_policy: "off".into(),
+        concurrency: 1,
+        run_count: 1,
+        warm_state: "cold".into(),
+        request_count: 1,
+        validation_result: "recorded".into(),
+        extensions: ext(),
+    };
+    let architecture = ArchitectureReportV1 {
+        engine_build_root: engine.root().unwrap(),
+        placement_root: raw(b"placement-plan"),
+        rejected_adapter: "knolo.llama.v1".into(),
+        code: "UNSUPPORTED_ARCHITECTURE".into(),
+        retryable: false,
+        weights_opened: false,
+        forward_ran: false,
+        receipt_stored: false,
+        execution_mode: "isolated-replay".into(),
+        cache_policy: "off".into(),
+        concurrency: 1,
+        run_count: 1,
+        warm_state: "cold".into(),
+        request_count: 1,
+        validation_result: "recorded".into(),
+        extensions: ext(),
+    };
+    let public_key = PublicReportV1 {
+        engine_build_root: engine.root().unwrap(),
+        placement_root: raw(b"placement-plan"),
+        release_root: raw(b"release"),
+        message_root: raw(b"message"),
+        public_status: "multiplied".into(),
+        public_multiplied: true,
+        signature_checked: false,
+        public_key_bytes: ED25519_PUBLIC_KEY_BYTES,
+        signature_bytes: ED25519_SIGNATURE_BYTES,
+        scalar_bytes: ED25519_SCALAR_BYTES,
+        key_material_present: false,
+        execution_mode: "isolated-replay".into(),
+        cache_policy: "off".into(),
+        concurrency: 1,
+        run_count: 1,
+        warm_state: "cold".into(),
+        request_count: 1,
+        validation_result: "verified".into(),
+        extensions: ext(),
+    };
+    let quantization = QuantizationReportV1 {
+        engine_build_root: engine.root().unwrap(),
+        placement_root: raw(b"placement-plan"),
+        artifact_root: raw(b"artifact"),
+        reason: "dtype".into(),
+        code: "UNSUPPORTED_QUANTIZATION".into(),
+        retryable: false,
+        weights_opened: true,
+        payload_read: true,
+        forward_ran: false,
+        receipt_stored: false,
+        execution_mode: "isolated-replay".into(),
+        cache_policy: "off".into(),
+        concurrency: 1,
+        run_count: 1,
+        warm_state: "cold".into(),
+        request_count: 1,
+        validation_result: "recorded".into(),
+        extensions: ext(),
+    };
+    let kernel_report = KernelReportV1 {
+        engine_build_root: engine.root().unwrap(),
+        placement_root: raw(b"placement-plan"),
+        reason: "feature".into(),
+        code: "UNSUPPORTED_KERNEL".into(),
+        retryable: false,
+        cuda_requested: true,
+        kernel_selected: false,
+        device_opened: false,
+        forward_ran: false,
+        receipt_stored: false,
+        execution_mode: "isolated-replay".into(),
+        cache_policy: "off".into(),
+        concurrency: 1,
+        run_count: 1,
+        warm_state: "cold".into(),
+        request_count: 1,
+        validation_result: "recorded".into(),
+        extensions: ext(),
+    };
+    let placement_refusal = PlacementRefusalReportV1 {
+        engine_build_root: engine.root().unwrap(),
+        placement_root: raw(b"placement-plan"),
+        reason: "device".into(),
+        code: "PLACEMENT_UNSATISFIABLE".into(),
+        retryable: false,
+        probe_reached: true,
+        slot_visible: false,
+        device_opened: false,
+        cpu_fallback: false,
+        forward_ran: false,
+        receipt_stored: false,
+        execution_mode: "isolated-replay".into(),
+        cache_policy: "off".into(),
+        concurrency: 1,
+        run_count: 1,
+        warm_state: "cold".into(),
+        request_count: 1,
+        validation_result: "recorded".into(),
+        extensions: ext(),
+    };
+    let memory_refusal = MemoryRefusalReportV1 {
+        engine_build_root: engine.root().unwrap(),
+        placement_root: raw(b"placement-plan"),
+        reason: "pool".into(),
+        free_bytes: 0,
+        needed_bytes: 4096,
+        code: "INSUFFICIENT_MEMORY".into(),
+        retryable: true,
+        resident_full: true,
+        queue_held: false,
+        allocated: false,
+        forward_ran: false,
+        receipt_stored: false,
+        listener_up: true,
+        execution_mode: "isolated-replay".into(),
+        cache_policy: "off".into(),
+        concurrency: 1,
+        run_count: 1,
+        warm_state: "cold".into(),
+        request_count: 1,
+        validation_result: "recorded".into(),
+        extensions: ext(),
+    };
+    let signature_check = SignatureCheckReportV1 {
+        engine_build_root: engine.root().unwrap(),
+        placement_root: raw(b"placement-plan"),
+        release_root: raw(b"release"),
+        message_root: raw(b"message"),
+        check_status: "checked".into(),
+        signature_checked: true,
+        cofactor_cleared: false,
+        public_key_bytes: ED25519_PUBLIC_KEY_BYTES,
+        signature_bytes: ED25519_SIGNATURE_BYTES,
+        scalar_bytes: ED25519_SCALAR_BYTES,
+        key_material_present: false,
+        execution_mode: "isolated-replay".into(),
+        cache_policy: "off".into(),
+        concurrency: 1,
+        run_count: 1,
+        warm_state: "cold".into(),
+        request_count: 1,
+        validation_result: "verified".into(),
+        extensions: ext(),
+    };
+    let context_limit = ContextLimitReportV1 {
+        engine_build_root: engine.root().unwrap(),
+        placement_root: raw(b"placement-plan"),
+        reason: "prompt".into(),
+        prompt_tokens: 17,
+        reserved_tokens: 0,
+        context_tokens: MICRO_CONTEXT,
+        truncated: false,
+        code: "CONTEXT_LIMIT_EXCEEDED".into(),
+        retryable: false,
+        forward_ran: false,
+        receipt_stored: false,
+        execution_mode: "isolated-replay".into(),
+        cache_policy: "off".into(),
+        concurrency: 1,
+        run_count: 1,
+        warm_state: "cold".into(),
+        request_count: 1,
+        validation_result: "recorded".into(),
+        extensions: ext(),
+    };
+    let prompt_compilation = PromptCompilationReportV1 {
+        engine_build_root: engine.root().unwrap(),
+        placement_root: raw(b"placement-plan"),
+        failure: "empty".into(),
+        token_count: 0,
+        rejected_token: 0,
+        code: "PROMPT_COMPILATION_FAILED".into(),
+        retryable: false,
+        template_rendered: true,
+        tokenizer_parsed: true,
+        prompt_compiled: false,
+        forward_ran: false,
+        receipt_stored: false,
+        execution_mode: "isolated-replay".into(),
+        cache_policy: "off".into(),
+        concurrency: 1,
+        run_count: 1,
+        warm_state: "cold".into(),
+        request_count: 1,
+        validation_result: "recorded".into(),
+        extensions: ext(),
+    };
+    let image_invalid = ImageInvalidReportV1 {
+        engine_build_root: engine.root().unwrap(),
+        placement_root: raw(b"placement-plan"),
+        image_root: raw(b"image"),
+        reason: "format".into(),
+        code: "MODEL_IMAGE_INVALID".into(),
+        retryable: false,
+        image_parsed: true,
+        weights_opened: false,
+        forward_ran: false,
+        receipt_stored: false,
+        execution_mode: "isolated-replay".into(),
+        cache_policy: "off".into(),
+        concurrency: 1,
+        run_count: 1,
+        warm_state: "cold".into(),
+        request_count: 1,
+        validation_result: "recorded".into(),
+        extensions: ext(),
+    };
+    let image_signature = ImageSignatureReportV1 {
+        engine_build_root: engine.root().unwrap(),
+        placement_root: raw(b"placement-plan"),
+        image_root: raw(b"image"),
+        reason: "length".into(),
+        signature_count: 1,
+        signature_bytes: 32,
+        code: "MODEL_IMAGE_SIGNATURE_INVALID".into(),
+        retryable: false,
+        algorithm_accepted: true,
+        weights_opened: false,
+        forward_ran: false,
+        receipt_stored: false,
+        key_material_present: false,
+        execution_mode: "isolated-replay".into(),
+        cache_policy: "off".into(),
+        concurrency: 1,
+        run_count: 1,
+        warm_state: "cold".into(),
+        request_count: 1,
+        validation_result: "recorded".into(),
+        extensions: ext(),
+    };
     let conformance = ModelConformanceReceiptV1 {
         model_runtime_root: image.runtime_root().unwrap(),
         engine_build_root: engine.root().unwrap(),
@@ -1995,6 +2516,181 @@ fn contracts_roundtrip_reject_and_export_vectors() {
             eviction.to_cbor().unwrap().to_bytes(),
             "knolo.infer.eviction-report",
         ),
+        (
+            "equality-report",
+            "infer-equality",
+            equality.to_bytes().unwrap(),
+            equality.to_cbor().unwrap().to_bytes(),
+            "knolo.infer.equality-report",
+        ),
+        (
+            "oom-report",
+            "infer-oom",
+            oom.to_bytes().unwrap(),
+            oom.to_cbor().unwrap().to_bytes(),
+            "knolo.infer.oom-report",
+        ),
+        (
+            "fault-report",
+            "infer-fault",
+            fault.to_bytes().unwrap(),
+            fault.to_cbor().unwrap().to_bytes(),
+            "knolo.infer.fault-report",
+        ),
+        (
+            "timeout-report",
+            "infer-timeout",
+            timeout.to_bytes().unwrap(),
+            timeout.to_cbor().unwrap().to_bytes(),
+            "knolo.infer.timeout-report",
+        ),
+        (
+            "worker-start-report",
+            "infer-worker-start",
+            worker_start.to_bytes().unwrap(),
+            worker_start.to_cbor().unwrap().to_bytes(),
+            "knolo.infer.worker-start-report",
+        ),
+        (
+            "challenge-report",
+            "infer-challenge",
+            challenge.to_bytes().unwrap(),
+            challenge.to_cbor().unwrap().to_bytes(),
+            "knolo.infer.challenge-report",
+        ),
+        (
+            "replay-environment-report",
+            "infer-replay-environment",
+            replay_environment.to_bytes().unwrap(),
+            replay_environment.to_cbor().unwrap().to_bytes(),
+            "knolo.infer.replay-environment-report",
+        ),
+        (
+            "replay-output-report",
+            "infer-replay-output",
+            replay_output.to_bytes().unwrap(),
+            replay_output.to_cbor().unwrap().to_bytes(),
+            "knolo.infer.replay-output-report",
+        ),
+        (
+            "worker-lost-report",
+            "infer-worker-lost",
+            worker_lost.to_bytes().unwrap(),
+            worker_lost.to_cbor().unwrap().to_bytes(),
+            "knolo.infer.worker-lost-report",
+        ),
+        (
+            "draining-report",
+            "infer-draining",
+            draining.to_bytes().unwrap(),
+            draining.to_cbor().unwrap().to_bytes(),
+            "knolo.infer.draining-report",
+        ),
+        (
+            "scalar-report",
+            "infer-scalar",
+            scalar.to_bytes().unwrap(),
+            scalar.to_cbor().unwrap().to_bytes(),
+            "knolo.infer.scalar-report",
+        ),
+        (
+            "digest-mismatch-report",
+            "infer-digest-mismatch",
+            digest_mismatch.to_bytes().unwrap(),
+            digest_mismatch.to_cbor().unwrap().to_bytes(),
+            "knolo.infer.digest-mismatch-report",
+        ),
+        (
+            "tokenizer-invalid-report",
+            "infer-tokenizer-invalid",
+            tokenizer_invalid.to_bytes().unwrap(),
+            tokenizer_invalid.to_cbor().unwrap().to_bytes(),
+            "knolo.infer.tokenizer-invalid-report",
+        ),
+        (
+            "template-invalid-report",
+            "infer-template-invalid",
+            template_invalid.to_bytes().unwrap(),
+            template_invalid.to_cbor().unwrap().to_bytes(),
+            "knolo.infer.template-invalid-report",
+        ),
+        (
+            "architecture-report",
+            "infer-architecture",
+            architecture.to_bytes().unwrap(),
+            architecture.to_cbor().unwrap().to_bytes(),
+            "knolo.infer.architecture-report",
+        ),
+        (
+            "public-report",
+            "infer-public",
+            public_key.to_bytes().unwrap(),
+            public_key.to_cbor().unwrap().to_bytes(),
+            "knolo.infer.public-report",
+        ),
+        (
+            "quantization-report",
+            "infer-quantization",
+            quantization.to_bytes().unwrap(),
+            quantization.to_cbor().unwrap().to_bytes(),
+            "knolo.infer.quantization-report",
+        ),
+        (
+            "kernel-report",
+            "infer-kernel",
+            kernel_report.to_bytes().unwrap(),
+            kernel_report.to_cbor().unwrap().to_bytes(),
+            "knolo.infer.kernel-report",
+        ),
+        (
+            "placement-refusal-report",
+            "infer-placement-refusal",
+            placement_refusal.to_bytes().unwrap(),
+            placement_refusal.to_cbor().unwrap().to_bytes(),
+            "knolo.infer.placement-refusal-report",
+        ),
+        (
+            "memory-refusal-report",
+            "infer-memory-refusal",
+            memory_refusal.to_bytes().unwrap(),
+            memory_refusal.to_cbor().unwrap().to_bytes(),
+            "knolo.infer.memory-refusal-report",
+        ),
+        (
+            "signature-check-report",
+            "infer-signature-check",
+            signature_check.to_bytes().unwrap(),
+            signature_check.to_cbor().unwrap().to_bytes(),
+            "knolo.infer.signature-check-report",
+        ),
+        (
+            "context-limit-report",
+            "infer-context-limit",
+            context_limit.to_bytes().unwrap(),
+            context_limit.to_cbor().unwrap().to_bytes(),
+            "knolo.infer.context-limit-report",
+        ),
+        (
+            "prompt-compilation-report",
+            "infer-prompt-compilation",
+            prompt_compilation.to_bytes().unwrap(),
+            prompt_compilation.to_cbor().unwrap().to_bytes(),
+            "knolo.infer.prompt-compilation-report",
+        ),
+        (
+            "image-invalid-report",
+            "infer-image-invalid",
+            image_invalid.to_bytes().unwrap(),
+            image_invalid.to_cbor().unwrap().to_bytes(),
+            "knolo.infer.image-invalid-report",
+        ),
+        (
+            "image-signature-report",
+            "infer-image-signature",
+            image_signature.to_bytes().unwrap(),
+            image_signature.to_cbor().unwrap().to_bytes(),
+            "knolo.infer.image-signature-report",
+        ),
     ];
 
     let mut rows = Vec::new();
@@ -2052,6 +2748,171 @@ fn contracts_roundtrip_reject_and_export_vectors() {
     let duplicate_bytes = duplicate.to_bytes().unwrap();
     let concurrent_load_bytes = concurrent_load.to_bytes().unwrap();
     let eviction_bytes = eviction.to_bytes().unwrap();
+    let equality_bytes = equality.to_bytes().unwrap();
+    let oom_bytes = oom.to_bytes().unwrap();
+    let fault_bytes = fault.to_bytes().unwrap();
+    let timeout_bytes = timeout.to_bytes().unwrap();
+    let worker_start_bytes = worker_start.to_bytes().unwrap();
+    let challenge_bytes = challenge.to_bytes().unwrap();
+    let replay_environment_bytes = replay_environment.to_bytes().unwrap();
+    let replay_output_bytes = replay_output.to_bytes().unwrap();
+    let worker_lost_bytes = worker_lost.to_bytes().unwrap();
+    let draining_bytes = draining.to_bytes().unwrap();
+    let scalar_bytes = scalar.to_bytes().unwrap();
+    let digest_mismatch_bytes = digest_mismatch.to_bytes().unwrap();
+    let tokenizer_invalid_bytes = tokenizer_invalid.to_bytes().unwrap();
+    let template_invalid_bytes = template_invalid.to_bytes().unwrap();
+    let architecture_bytes = architecture.to_bytes().unwrap();
+    rows.push(bad(
+        "architecture-unknown-field",
+        &with_extra(&architecture_bytes),
+        "CONTRACT_INVALID",
+    ));
+    rows.push(bad(
+        "architecture-bad-version",
+        &bump_version(&architecture_bytes),
+        "CONTRACT_INVALID",
+    ));
+    rows.push(bad(
+        "template-invalid-unknown-field",
+        &with_extra(&template_invalid_bytes),
+        "CONTRACT_INVALID",
+    ));
+    rows.push(bad(
+        "template-invalid-bad-version",
+        &bump_version(&template_invalid_bytes),
+        "CONTRACT_INVALID",
+    ));
+    rows.push(bad(
+        "tokenizer-invalid-unknown-field",
+        &with_extra(&tokenizer_invalid_bytes),
+        "CONTRACT_INVALID",
+    ));
+    rows.push(bad(
+        "tokenizer-invalid-bad-version",
+        &bump_version(&tokenizer_invalid_bytes),
+        "CONTRACT_INVALID",
+    ));
+    rows.push(bad(
+        "digest-mismatch-unknown-field",
+        &with_extra(&digest_mismatch_bytes),
+        "CONTRACT_INVALID",
+    ));
+    rows.push(bad(
+        "digest-mismatch-bad-version",
+        &bump_version(&digest_mismatch_bytes),
+        "CONTRACT_INVALID",
+    ));
+    rows.push(bad(
+        "scalar-unknown-field",
+        &with_extra(&scalar_bytes),
+        "CONTRACT_INVALID",
+    ));
+    rows.push(bad(
+        "scalar-bad-version",
+        &bump_version(&scalar_bytes),
+        "CONTRACT_INVALID",
+    ));
+    rows.push(bad(
+        "draining-unknown-field",
+        &with_extra(&draining_bytes),
+        "CONTRACT_INVALID",
+    ));
+    rows.push(bad(
+        "draining-bad-version",
+        &bump_version(&draining_bytes),
+        "CONTRACT_INVALID",
+    ));
+    rows.push(bad(
+        "worker-lost-unknown-field",
+        &with_extra(&worker_lost_bytes),
+        "CONTRACT_INVALID",
+    ));
+    rows.push(bad(
+        "worker-lost-bad-version",
+        &bump_version(&worker_lost_bytes),
+        "CONTRACT_INVALID",
+    ));
+    rows.push(bad(
+        "replay-output-unknown-field",
+        &with_extra(&replay_output_bytes),
+        "CONTRACT_INVALID",
+    ));
+    rows.push(bad(
+        "replay-output-bad-version",
+        &bump_version(&replay_output_bytes),
+        "CONTRACT_INVALID",
+    ));
+    rows.push(bad(
+        "replay-environment-unknown-field",
+        &with_extra(&replay_environment_bytes),
+        "CONTRACT_INVALID",
+    ));
+    rows.push(bad(
+        "replay-environment-bad-version",
+        &bump_version(&replay_environment_bytes),
+        "CONTRACT_INVALID",
+    ));
+    rows.push(bad(
+        "challenge-unknown-field",
+        &with_extra(&challenge_bytes),
+        "CONTRACT_INVALID",
+    ));
+    rows.push(bad(
+        "challenge-bad-version",
+        &bump_version(&challenge_bytes),
+        "CONTRACT_INVALID",
+    ));
+    rows.push(bad(
+        "worker-start-unknown-field",
+        &with_extra(&worker_start_bytes),
+        "CONTRACT_INVALID",
+    ));
+    rows.push(bad(
+        "worker-start-bad-version",
+        &bump_version(&worker_start_bytes),
+        "CONTRACT_INVALID",
+    ));
+    rows.push(bad(
+        "timeout-unknown-field",
+        &with_extra(&timeout_bytes),
+        "CONTRACT_INVALID",
+    ));
+    rows.push(bad(
+        "timeout-bad-version",
+        &bump_version(&timeout_bytes),
+        "CONTRACT_INVALID",
+    ));
+    rows.push(bad(
+        "fault-unknown-field",
+        &with_extra(&fault_bytes),
+        "CONTRACT_INVALID",
+    ));
+    rows.push(bad(
+        "fault-bad-version",
+        &bump_version(&fault_bytes),
+        "CONTRACT_INVALID",
+    ));
+    rows.push(bad(
+        "oom-unknown-field",
+        &with_extra(&oom_bytes),
+        "CONTRACT_INVALID",
+    ));
+    rows.push(bad(
+        "oom-bad-version",
+        &bump_version(&oom_bytes),
+        "CONTRACT_INVALID",
+    ));
+    rows.push(bad(
+        "equality-unknown-field",
+        &with_extra(&equality_bytes),
+        "CONTRACT_INVALID",
+    ));
+    rows.push(bad(
+        "equality-bad-version",
+        &bump_version(&equality_bytes),
+        "CONTRACT_INVALID",
+    ));
     rows.push(bad(
         "eviction-unknown-field",
         &with_extra(&eviction_bytes),
@@ -3569,6 +4430,445 @@ fn perplexity_report_rejects_a_result_other_than_recorded() {
     report.target_accuracy_millionths = 1_000_001;
     let err = report.to_bytes().unwrap_err();
     assert!(err.message.contains("target accuracy"), "{err}");
+}
+
+#[test]
+fn preflight_reports_reject_a_crossed_flag() {
+    let mut scalar = ScalarReportV1 {
+        engine_build_root: raw(b"engine"),
+        placement_root: raw(b"placement-plan"),
+        release_root: raw(b"release"),
+        message_root: raw(b"message"),
+        scalar_status: "reduced".into(),
+        scalar_reduced: true,
+        public_multiplied: false,
+        public_key_bytes: ED25519_PUBLIC_KEY_BYTES,
+        signature_bytes: ED25519_SIGNATURE_BYTES,
+        scalar_bytes: ED25519_SCALAR_BYTES,
+        key_material_present: false,
+        execution_mode: "isolated-replay".into(),
+        cache_policy: "off".into(),
+        concurrency: 1,
+        run_count: 1,
+        warm_state: "cold".into(),
+        request_count: 1,
+        validation_result: "verified".into(),
+        extensions: ext(),
+    };
+    scalar.to_bytes().unwrap();
+    scalar.public_multiplied = true;
+    let err = scalar.to_bytes().unwrap_err();
+    assert!(
+        err.message
+            .contains("the public-key multiplication stays uncomputed"),
+        "{err}"
+    );
+
+    let mut mismatch = DigestMismatchReportV1 {
+        engine_build_root: raw(b"engine"),
+        placement_root: raw(b"placement-plan"),
+        artifact_root: raw(b"artifact"),
+        mismatch: "size".into(),
+        code: "MODEL_DIGEST_MISMATCH".into(),
+        retryable: false,
+        header_parsed: false,
+        body_read: false,
+        forward_ran: false,
+        receipt_stored: false,
+        execution_mode: "isolated-replay".into(),
+        cache_policy: "off".into(),
+        concurrency: 1,
+        run_count: 1,
+        warm_state: "cold".into(),
+        request_count: 1,
+        validation_result: "recorded".into(),
+        extensions: ext(),
+    };
+    mismatch.to_bytes().unwrap();
+    mismatch.body_read = true;
+    let err = mismatch.to_bytes().unwrap_err();
+    assert!(
+        err.message
+            .contains("a size mismatch does not read the body"),
+        "{err}"
+    );
+
+    let mut tokenizer = TokenizerInvalidReportV1 {
+        engine_build_root: raw(b"engine"),
+        placement_root: raw(b"placement-plan"),
+        tokenizer_root: raw(b"tokenizer"),
+        failure: "root".into(),
+        code: "TOKENIZER_INVALID".into(),
+        retryable: false,
+        tokenizer_parsed: false,
+        template_rendered: false,
+        prompt_compiled: false,
+        forward_ran: false,
+        receipt_stored: false,
+        execution_mode: "isolated-replay".into(),
+        cache_policy: "off".into(),
+        concurrency: 1,
+        run_count: 1,
+        warm_state: "cold".into(),
+        request_count: 1,
+        validation_result: "recorded".into(),
+        extensions: ext(),
+    };
+    tokenizer.to_bytes().unwrap();
+    tokenizer.tokenizer_parsed = true;
+    let err = tokenizer.to_bytes().unwrap_err();
+    assert!(
+        err.message
+            .contains("a root mismatch does not parse the tokenizer"),
+        "{err}"
+    );
+
+    let mut template = TemplateInvalidReportV1 {
+        engine_build_root: raw(b"engine"),
+        placement_root: raw(b"placement-plan"),
+        template_root: raw(b"template"),
+        failure: "cap".into(),
+        code: "TEMPLATE_INVALID".into(),
+        retryable: false,
+        template_rendered: false,
+        tokenizer_parsed: false,
+        prompt_compiled: false,
+        forward_ran: false,
+        receipt_stored: false,
+        execution_mode: "isolated-replay".into(),
+        cache_policy: "off".into(),
+        concurrency: 1,
+        run_count: 1,
+        warm_state: "cold".into(),
+        request_count: 1,
+        validation_result: "recorded".into(),
+        extensions: ext(),
+    };
+    template.to_bytes().unwrap();
+    template.template_rendered = true;
+    let err = template.to_bytes().unwrap_err();
+    assert!(
+        err.message
+            .contains("a template failure does not render the prompt"),
+        "{err}"
+    );
+
+    let mut architecture = ArchitectureReportV1 {
+        engine_build_root: raw(b"engine"),
+        placement_root: raw(b"placement-plan"),
+        rejected_adapter: "knolo.llama.v1".into(),
+        code: "UNSUPPORTED_ARCHITECTURE".into(),
+        retryable: false,
+        weights_opened: false,
+        forward_ran: false,
+        receipt_stored: false,
+        execution_mode: "isolated-replay".into(),
+        cache_policy: "off".into(),
+        concurrency: 1,
+        run_count: 1,
+        warm_state: "cold".into(),
+        request_count: 1,
+        validation_result: "recorded".into(),
+        extensions: ext(),
+    };
+    architecture.to_bytes().unwrap();
+    architecture.rejected_adapter = "knolo.micro.v1".into();
+    let err = architecture.to_bytes().unwrap_err();
+    assert!(
+        err.message.contains("the micro adapter is compiled in"),
+        "{err}"
+    );
+
+    let mut public_key = PublicReportV1 {
+        engine_build_root: raw(b"engine"),
+        placement_root: raw(b"placement-plan"),
+        release_root: raw(b"release"),
+        message_root: raw(b"message"),
+        public_status: "multiplied".into(),
+        public_multiplied: true,
+        signature_checked: false,
+        public_key_bytes: ED25519_PUBLIC_KEY_BYTES,
+        signature_bytes: ED25519_SIGNATURE_BYTES,
+        scalar_bytes: ED25519_SCALAR_BYTES,
+        key_material_present: false,
+        execution_mode: "isolated-replay".into(),
+        cache_policy: "off".into(),
+        concurrency: 1,
+        run_count: 1,
+        warm_state: "cold".into(),
+        request_count: 1,
+        validation_result: "verified".into(),
+        extensions: ext(),
+    };
+    public_key.to_bytes().unwrap();
+    public_key.signature_checked = true;
+    let err = public_key.to_bytes().unwrap_err();
+    assert!(
+        err.message.contains("the signature check stays uncomputed"),
+        "{err}"
+    );
+
+    let mut quantization = QuantizationReportV1 {
+        engine_build_root: raw(b"engine"),
+        placement_root: raw(b"placement-plan"),
+        artifact_root: raw(b"artifact"),
+        reason: "precision".into(),
+        code: "UNSUPPORTED_QUANTIZATION".into(),
+        retryable: false,
+        weights_opened: false,
+        payload_read: false,
+        forward_ran: false,
+        receipt_stored: false,
+        execution_mode: "isolated-replay".into(),
+        cache_policy: "off".into(),
+        concurrency: 1,
+        run_count: 1,
+        warm_state: "cold".into(),
+        request_count: 1,
+        validation_result: "recorded".into(),
+        extensions: ext(),
+    };
+    quantization.to_bytes().unwrap();
+    quantization.weights_opened = true;
+    let err = quantization.to_bytes().unwrap_err();
+    assert!(
+        err.message
+            .contains("a precision refusal does not open weights"),
+        "{err}"
+    );
+
+    let mut kernel = KernelReportV1 {
+        engine_build_root: raw(b"engine"),
+        placement_root: raw(b"placement-plan"),
+        reason: "backend".into(),
+        code: "UNSUPPORTED_KERNEL".into(),
+        retryable: false,
+        cuda_requested: false,
+        kernel_selected: false,
+        device_opened: false,
+        forward_ran: false,
+        receipt_stored: false,
+        execution_mode: "isolated-replay".into(),
+        cache_policy: "off".into(),
+        concurrency: 1,
+        run_count: 1,
+        warm_state: "cold".into(),
+        request_count: 1,
+        validation_result: "recorded".into(),
+        extensions: ext(),
+    };
+    kernel.to_bytes().unwrap();
+    kernel.cuda_requested = true;
+    let err = kernel.to_bytes().unwrap_err();
+    assert!(
+        err.message
+            .contains("a foreign backend does not request cuda"),
+        "{err}"
+    );
+
+    let mut placement = PlacementRefusalReportV1 {
+        engine_build_root: raw(b"engine"),
+        placement_root: raw(b"placement-plan"),
+        reason: "device".into(),
+        code: "PLACEMENT_UNSATISFIABLE".into(),
+        retryable: false,
+        probe_reached: true,
+        slot_visible: false,
+        device_opened: false,
+        cpu_fallback: false,
+        forward_ran: false,
+        receipt_stored: false,
+        execution_mode: "isolated-replay".into(),
+        cache_policy: "off".into(),
+        concurrency: 1,
+        run_count: 1,
+        warm_state: "cold".into(),
+        request_count: 1,
+        validation_result: "recorded".into(),
+        extensions: ext(),
+    };
+    placement.to_bytes().unwrap();
+    placement.slot_visible = true;
+    let err = placement.to_bytes().unwrap_err();
+    assert!(
+        err.message.contains("a missing device is not visible"),
+        "{err}"
+    );
+
+    let mut memory = MemoryRefusalReportV1 {
+        engine_build_root: raw(b"engine"),
+        placement_root: raw(b"placement-plan"),
+        reason: "pool".into(),
+        free_bytes: 0,
+        needed_bytes: MAX_PEAK_BYTES,
+        code: "INSUFFICIENT_MEMORY".into(),
+        retryable: true,
+        resident_full: true,
+        queue_held: false,
+        allocated: false,
+        forward_ran: false,
+        receipt_stored: false,
+        listener_up: true,
+        execution_mode: "isolated-replay".into(),
+        cache_policy: "off".into(),
+        concurrency: 1,
+        run_count: 1,
+        warm_state: "cold".into(),
+        request_count: 1,
+        validation_result: "recorded".into(),
+        extensions: ext(),
+    };
+    memory.to_bytes().unwrap();
+    memory.needed_bytes = MAX_PEAK_BYTES + 1;
+    let err = memory.to_bytes().unwrap_err();
+    assert_eq!(err.code, ErrorCode::ContractInvalid, "{err}");
+    assert!(err.message.contains("needed bytes exceed 64 MiB"), "{err}");
+
+    let mut signature_check = SignatureCheckReportV1 {
+        engine_build_root: raw(b"engine"),
+        placement_root: raw(b"placement-plan"),
+        release_root: raw(b"release"),
+        message_root: raw(b"message"),
+        check_status: "checked".into(),
+        signature_checked: true,
+        cofactor_cleared: false,
+        public_key_bytes: ED25519_PUBLIC_KEY_BYTES,
+        signature_bytes: ED25519_SIGNATURE_BYTES,
+        scalar_bytes: ED25519_SCALAR_BYTES,
+        key_material_present: false,
+        execution_mode: "isolated-replay".into(),
+        cache_policy: "off".into(),
+        concurrency: 1,
+        run_count: 1,
+        warm_state: "cold".into(),
+        request_count: 1,
+        validation_result: "verified".into(),
+        extensions: ext(),
+    };
+    signature_check.to_bytes().unwrap();
+    signature_check.cofactor_cleared = true;
+    let err = signature_check.to_bytes().unwrap_err();
+    assert!(
+        err.message.contains("the cofactor stays uncleared"),
+        "{err}"
+    );
+
+    let mut context_limit = ContextLimitReportV1 {
+        engine_build_root: raw(b"engine"),
+        placement_root: raw(b"placement-plan"),
+        reason: "prompt".into(),
+        prompt_tokens: 17,
+        reserved_tokens: 0,
+        context_tokens: MICRO_CONTEXT,
+        truncated: false,
+        code: "CONTEXT_LIMIT_EXCEEDED".into(),
+        retryable: false,
+        forward_ran: false,
+        receipt_stored: false,
+        execution_mode: "isolated-replay".into(),
+        cache_policy: "off".into(),
+        concurrency: 1,
+        run_count: 1,
+        warm_state: "cold".into(),
+        request_count: 1,
+        validation_result: "recorded".into(),
+        extensions: ext(),
+    };
+    context_limit.to_bytes().unwrap();
+    context_limit.truncated = true;
+    let err = context_limit.to_bytes().unwrap_err();
+    assert!(err.message.contains("tokens are not truncated"), "{err}");
+
+    let mut prompt_compilation = PromptCompilationReportV1 {
+        engine_build_root: raw(b"engine"),
+        placement_root: raw(b"placement-plan"),
+        failure: "empty".into(),
+        token_count: 0,
+        rejected_token: 0,
+        code: "PROMPT_COMPILATION_FAILED".into(),
+        retryable: false,
+        template_rendered: true,
+        tokenizer_parsed: true,
+        prompt_compiled: false,
+        forward_ran: false,
+        receipt_stored: false,
+        execution_mode: "isolated-replay".into(),
+        cache_policy: "off".into(),
+        concurrency: 1,
+        run_count: 1,
+        warm_state: "cold".into(),
+        request_count: 1,
+        validation_result: "recorded".into(),
+        extensions: ext(),
+    };
+    prompt_compilation.to_bytes().unwrap();
+    prompt_compilation.prompt_compiled = true;
+    let err = prompt_compilation.to_bytes().unwrap_err();
+    assert!(
+        err.message
+            .contains("a prompt failure does not compile the prompt"),
+        "{err}"
+    );
+
+    let mut image_invalid = ImageInvalidReportV1 {
+        engine_build_root: raw(b"engine"),
+        placement_root: raw(b"placement-plan"),
+        image_root: raw(b"image"),
+        reason: "empty".into(),
+        code: "MODEL_IMAGE_INVALID".into(),
+        retryable: false,
+        image_parsed: false,
+        weights_opened: false,
+        forward_ran: false,
+        receipt_stored: false,
+        execution_mode: "isolated-replay".into(),
+        cache_policy: "off".into(),
+        concurrency: 1,
+        run_count: 1,
+        warm_state: "cold".into(),
+        request_count: 1,
+        validation_result: "recorded".into(),
+        extensions: ext(),
+    };
+    image_invalid.to_bytes().unwrap();
+    image_invalid.image_parsed = true;
+    let err = image_invalid.to_bytes().unwrap_err();
+    assert!(
+        err.message.contains("an empty image is not parsed"),
+        "{err}"
+    );
+
+    let mut image_signature = ImageSignatureReportV1 {
+        engine_build_root: raw(b"engine"),
+        placement_root: raw(b"placement-plan"),
+        image_root: raw(b"image"),
+        reason: "algorithm".into(),
+        signature_count: 1,
+        signature_bytes: 0,
+        code: "MODEL_IMAGE_SIGNATURE_INVALID".into(),
+        retryable: false,
+        algorithm_accepted: false,
+        weights_opened: false,
+        forward_ran: false,
+        receipt_stored: false,
+        key_material_present: false,
+        execution_mode: "isolated-replay".into(),
+        cache_policy: "off".into(),
+        concurrency: 1,
+        run_count: 1,
+        warm_state: "cold".into(),
+        request_count: 1,
+        validation_result: "recorded".into(),
+        extensions: ext(),
+    };
+    image_signature.to_bytes().unwrap();
+    image_signature.algorithm_accepted = true;
+    let err = image_signature.to_bytes().unwrap_err();
+    assert!(
+        err.message
+            .contains("an algorithm refusal does not accept the algorithm"),
+        "{err}"
+    );
 }
 
 #[test]

@@ -12,7 +12,7 @@ The contract layer:
 
 - definite-length canonical CBOR, the same subset as Knolo Core KIP-0003
 - domain-separated SHA-256 digests (`sha256-` plus 64 lowercase hex digits)
-- the sixty-eight versioned Infer objects, with unknown fields rejected
+- the ninety-three versioned Infer objects, with unknown fields rejected
 - fixed-point sampler settings (no floats in rooted contracts)
 - a Rust crate, `infer-contracts`, and a TypeScript package, `@knolo/infer`, that agree on `conformance/contracts/vectors.json`
 - a cross-check that the shared CBOR subset matches `@knolo/core`
@@ -197,6 +197,31 @@ GGUF:
 - `measure_duplicate` records `CONTRACT_INVALID` on a `knolo.infer.duplicate-report`. The second copy does not start. Run and serve do not call it
 - `measure_concurrent_load` records one worker on a `knolo.infer.concurrent-load-report`. A live worker is not replaced. Run and serve do not call it
 - `measure_prefix_eviction` records zero evicted pages on a `knolo.infer.eviction-report`. The prefix index stays unallocated. Run and serve do not call it
+- `measure_point_equality` records a host-supplied point comparison on a `knolo.infer.equality-report`. An equal comparison is `verified`. The challenge hash stays uncomputed. Run and serve do not call it
+- `measure_cuda_oom` records `CUDA_OOM` on a `knolo.infer.oom-report`. The device is `slot-0`, and there is no fallback to CPU. Run and serve do not call it
+- `measure_cuda_fault` records `CUDA_FAULT` on a `knolo.infer.fault-report`. The fault is not retryable, and CUDA graphs stay off. Run and serve do not call it
+- `measure_timeout` records `REQUEST_TIMEOUT` on a `knolo.infer.timeout-report`. The listener stays up. Run and serve do not call it
+- `measure_worker_start` records `WORKER_START_FAILED` on a `knolo.infer.worker-start-report`. A missing binary does not bind. Run and serve do not call it
+- `measure_challenge` records a host-supplied challenge hash on a `knolo.infer.challenge-report`. A hashed challenge is `verified`. The scalar stays unreduced. Run and serve do not call it
+- `measure_replay_environment` records `REPLAY_ENVIRONMENT_MISMATCH` on a `knolo.infer.replay-environment-report`. The forward does not run. Run and serve do not call it
+- `measure_replay_output` records `REPLAY_OUTPUT_MISMATCH` on a `knolo.infer.replay-output-report`. The candidate output differs from the receipt. Run and serve do not call it
+- `measure_worker_lost` records `WORKER_LOST` on a `knolo.infer.worker-lost-report`. The listener stays up and the exit counts a restart. Run and serve do not call it
+- `measure_draining` records `SERVICE_DRAINING` on a `knolo.infer.draining-report`. The body is not parsed and the worker stays loaded. Run and serve do not call it
+- `measure_scalar` records a host-supplied scalar reduction on a `knolo.infer.scalar-report`. A reduced scalar is `verified`. The public key stays unmultiplied. Run and serve do not call it
+- `measure_digest_mismatch` records `MODEL_DIGEST_MISMATCH` on a `knolo.infer.digest-mismatch-report`. The header is not parsed. Run and serve do not call it
+- `measure_tokenizer_invalid` records `TOKENIZER_INVALID` on a `knolo.infer.tokenizer-invalid-report`. The prompt is not compiled. Run and serve do not call it
+- `measure_template_invalid` records `TEMPLATE_INVALID` on a `knolo.infer.template-invalid-report`. The template is not rendered. Run and serve do not call it
+- `measure_architecture` records `UNSUPPORTED_ARCHITECTURE` on a `knolo.infer.architecture-report`. Weights are not opened. Run and serve do not call it
+- `measure_public` records a host-supplied public-key multiplication on a `knolo.infer.public-report`. A multiplied public key is `verified`. The signature stays unchecked. Run and serve do not call it
+- `measure_quantization` records `UNSUPPORTED_QUANTIZATION` on a `knolo.infer.quantization-report`. A precision refusal does not open weights. Run and serve do not call it
+- `measure_kernel` records `UNSUPPORTED_KERNEL` on a `knolo.infer.kernel-report`. The kernel is not selected. Run and serve do not call it
+- `measure_placement_refusal` records `PLACEMENT_UNSATISFIABLE` on a `knolo.infer.placement-refusal-report`. The device is not opened. Run and serve do not call it
+- `measure_memory_refusal` records `INSUFFICIENT_MEMORY` on a `knolo.infer.memory-refusal-report`. No page is allocated. Run and serve do not call it
+- `measure_signature_check` records a host-supplied signature check on a `knolo.infer.signature-check-report`. A checked signature is `verified`. The cofactor stays uncleared. Run and serve do not call it
+- `measure_context_limit` records `CONTEXT_LIMIT_EXCEEDED` on a `knolo.infer.context-limit-report`. Tokens are not truncated. Run and serve do not call it
+- `measure_prompt_compilation` records `PROMPT_COMPILATION_FAILED` on a `knolo.infer.prompt-compilation-report`. The prompt is not compiled. Run and serve do not call it
+- `measure_image_invalid` records `MODEL_IMAGE_INVALID` on a `knolo.infer.image-invalid-report`. An empty image is not parsed. Run and serve do not call it
+- `measure_image_signature` records `MODEL_IMAGE_SIGNATURE_INVALID` on a `knolo.infer.image-signature-report`. Key bytes are not a field. Run and serve do not call it
 - a manifest with `format: gguf` is still `MODEL_IMAGE_INVALID`
 
 This machine can prove the CPU path. `cargo test --workspace` does not enable CUDA. `knolo-infer run` and `knolo-infer serve` then place the model on `cpu`. With `--features cuda`, both place it on `slot-0` and the receipt names that device. The specs are `spec/KIP-INFER-0022-cuda-run.md` and `spec/KIP-INFER-0023-cuda-serve.md`.
