@@ -1,0 +1,19 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/infer-contracts",
+    "crates/infer-artifact",
+    "crates/infer-prompt",
+    "crates/infer-engine",
+    "crates/infer-native",
+    "crates/infer-receipt",
+    "crates/infer-serve",
+    "crates/infer-cli",
+]
+
+[workspace.package]
+edition = "2021"
+license = "Apache-2.0"
+version = "0.1.0"
+publish = false
+rust-version = "1.85"

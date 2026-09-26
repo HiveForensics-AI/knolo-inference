@@ -1,0 +1,18 @@
+[package]
+name = "infer-prompt"
+description = "Bounded chat template and micro tokenizer"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+infer-artifact = { path = "../infer-artifact" }
+infer-contracts = { path = "../infer-contracts" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[dev-dependencies]
+infer-engine = { path = "../infer-engine" }
+serde_json = "1"

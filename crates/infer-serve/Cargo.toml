@@ -1,0 +1,32 @@
+[package]
+name = "infer-serve"
+description = "CPU supervisor, worker process, and loopback HTTP"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+rust-version.workspace = true
+
+[[bin]]
+name = "knolo-infer-worker"
+path = "src/bin/knolo-infer-worker.rs"
+
+[features]
+cuda = ["dep:infer-native", "infer-native/cuda"]
+
+[dependencies]
+infer-artifact = { path = "../infer-artifact" }
+infer-contracts = { path = "../infer-contracts" }
+infer-engine = { path = "../infer-engine" }
+infer-native = { path = "../infer-native", optional = true }
+infer-prompt = { path = "../infer-prompt" }
+libc = "0.2"
+serde_json = "1"
+
+[dev-dependencies]
+infer-artifact = { path = "../infer-artifact" }
+infer-contracts = { path = "../infer-contracts" }
+infer-engine = { path = "../infer-engine" }
+infer-prompt = { path = "../infer-prompt" }
+infer-receipt = { path = "../infer-receipt" }
+serde_json = "1"

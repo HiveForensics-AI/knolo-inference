@@ -1,0 +1,75 @@
+{
+  "cases": [
+    {
+      "maxContextTokens": 16,
+      "messages": [
+        {
+          "content": "hi",
+          "role": "user"
+        }
+      ],
+      "name": "hi",
+      "renderedText": "user: hi\n\n",
+      "reservedGenerationTokens": 4,
+      "tokenIdRoot": "sha256-30c920b90373022896fcc6d962021dcdfba9f719dcdb7bffd757ac0a4e82bfae",
+      "tokenIds": [
+        1,
+        14,
+        12,
+        6,
+        11,
+        15,
+        4,
+        7,
+        8,
+        3,
+        3
+      ]
+    },
+    {
+      "maxContextTokens": 64,
+      "messages": [
+        {
+          "content": "a",
+          "role": "user"
+        },
+        {
+          "content": "hi",
+          "role": "assistant"
+        }
+      ],
+      "name": "pair",
+      "renderedText": "user: a\nassistant: hi\n\n",
+      "reservedGenerationTokens": 4,
+      "tokenIdRoot": "sha256-b3815a3db4c54773b596dd119045b3d692567bf79ec0ebd6725a8bf8a4d42fc6",
+      "tokenIds": [
+        1,
+        14,
+        12,
+        6,
+        11,
+        15,
+        4,
+        5,
+        3,
+        5,
+        12,
+        12,
+        8,
+        12,
+        13,
+        5,
+        9,
+        13,
+        15,
+        4,
+        7,
+        8,
+        3,
+        3
+      ]
+    }
+  ],
+  "template": "{% for message in messages %}{{ message.role }}: {{ message.content }}\n{% endfor %}\n",
+  "tokenizerJson": "{\"kind\":\"knolo.micro.tokens.v1\",\"tokens\":[\"<pad>\",\"<bos>\",\"<eos>\",\"\\n\",\" \",\"a\",\"e\",\"h\",\"i\",\"n\",\"o\",\"r\",\"s\",\"t\",\"u\",\":\"],\"version\":1}\n"
+}
