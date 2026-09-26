@@ -2,11 +2,13 @@ mod admission;
 mod assurance;
 mod boundary;
 mod census;
+mod closure;
 mod common;
 mod compare;
 mod continuity;
 mod demo;
 mod execution;
+mod expansion;
 mod exposure;
 mod gate;
 mod incident;
@@ -20,6 +22,8 @@ mod refusal;
 mod release;
 mod resilience;
 mod runtime;
+mod serving;
+mod surface;
 
 pub use admission::{
     ConcurrentLoadReportV1, DuplicateReportV1, EvictionReportV1, PointReportV1,
@@ -36,6 +40,10 @@ pub use boundary::{
 pub use census::{
     kv_utilization_millionths, KvReportV1, PeakReportV1, PrefixReportV1, MAX_PEAK_BYTES,
     MICRO_KV_PAGES, MICRO_KV_PAGE_TOKENS,
+};
+pub use closure::{
+    ArtifactMissingReportV1, BackendReportV1, CofactorReportV1, DigestInvalidReportV1,
+    ReceiptRequiredReportV1, MAX_DIGEST_DOMAIN_BYTES, MAX_DIGEST_RECORD_HEX, RECEIPT_HTTP_STATUS,
 };
 pub use common::{
     artifact_root, validate_relative_path, ArtifactFileV1, EmbeddedArtifactV1, FixedPointSamplerV1,
@@ -55,6 +63,12 @@ pub use demo::{
 pub use execution::{
     ExecutionPlanV1, GrammarPlanV1, InferenceEventV1, InferenceIntentV1, LimitsV1, SamplerPlanV1,
     SAMPLER_ORDER_V1,
+};
+pub use expansion::{
+    AttentionReportV1, CapacityReportV1, DomainReportV1, ExpertPlacementReportV1, GlmReportV1,
+    GroupedKernelReportV1, MixedPlacementReportV1, MoeReportV1, RouterReportV1,
+    WorkstationReportV1, GLM_ADAPTER, MAX_BENCHMARK_COUNT, MAX_CAPACITY_TOKENS, MAX_EXPERTS,
+    MAX_GROUP_COUNT, MAX_PLACEMENT_DEVICES, MAX_ROUTER_SAMPLES, MAX_WINDOW_TOKENS,
 };
 pub use exposure::{
     CacheChannelReportV1, EquationReportV1, RedactionReportV1, SafeErrorReportV1,
@@ -114,10 +128,24 @@ pub use runtime::{
     EngineBuildDescriptorV1, GpuProbeV1, HardwareProbeV1, JitKernelV1, KernelBundleDescriptorV1,
     PlacementPlanV1, TensorGroupV1,
 };
+pub use serving::{
+    GraphReportV1, MultiModelReportV1, ReceiptVerifyReportV1, SecondaryReportV1,
+    SpeculativeReportV1, MAX_DEVICE_COUNT, MAX_PROPOSAL_TOKENS,
+};
+pub use surface::{
+    CanonicalCborReportV1, ContractInvalidReportV1, GrammarRefusalReportV1, ReceiptSignReportV1,
+    ToolRefusalReportV1, MAX_CBOR_ADDITIONAL, MAX_CBOR_MAJOR, MAX_FIELD_RECORD_BYTES,
+    MAX_GRAMMAR_SOURCE_BYTES, MAX_MAP_ADDITIONAL, MAX_TOOL_NAME_BYTES, SHORTEST_ADDITIONAL_MAX,
+    SHORTEST_ADDITIONAL_MIN,
+};
 
 use crate::cbor::{decode_canonical, CborValue};
 use crate::error::{fail, ErrorCode, InferFailure};
 use crate::fields::Fields;
+use expansion::{
+    ATTENTION_KIND, CAPACITY_KIND, DOMAIN_KIND, EXPERT_PLACEMENT_KIND, GLM_KIND,
+    GROUPED_KERNEL_KIND, MIXED_PLACEMENT_KIND, MOE_KIND, ROUTER_KIND, WORKSTATION_KIND,
+};
 
 use admission::{CONCURRENT_LOAD_KIND, DUPLICATE_KIND, EVICTION_KIND, POINT_KIND};
 use assurance::{
@@ -125,6 +153,9 @@ use assurance::{
 };
 use boundary::{API_KIND, HOST_KEY_KIND, RECEIPT_KEY_KIND, SANDBOX_KIND};
 use census::{KV_KIND, PEAK_KIND, PREFIX_KIND};
+use closure::{
+    ARTIFACT_MISSING_KIND, BACKEND_KIND, COFACTOR_KIND, DIGEST_INVALID_KIND, RECEIPT_REQUIRED_KIND,
+};
 use compare::{LLAMA_KIND, MISTRAL_KIND, RECIPE_KIND, VLLM_KIND};
 use continuity::{CURVE_KIND, DISCONNECT_KIND, RECEIPT_STORE_KIND, ROLLBACK_KIND};
 use demo::{CHAIN_KIND, EVIDENCE_OUTPUT_KIND, INSTALL_KIND, NOTICE_KIND};
@@ -157,6 +188,13 @@ use refusal::{
 use release::{BINARY_KIND, RELEASE_KIND, REPRODUCIBLE_KIND, SIGNATURE_KIND};
 use resilience::{BASE_KIND, DISK_KIND, RESTART_KIND, UNLOAD_KIND};
 use runtime::{ENGINE_BUILD_KIND, HARDWARE_PROBE_KIND, KERNEL_BUNDLE_KIND, PLACEMENT_PLAN_KIND};
+use serving::{
+    GRAPH_KIND, MULTI_MODEL_KIND, RECEIPT_VERIFY_KIND, SECONDARY_KIND, SPECULATIVE_KIND,
+};
+use surface::{
+    CANONICAL_CBOR_KIND, CONTRACT_INVALID_KIND, GRAMMAR_REFUSAL_KIND, RECEIPT_SIGN_KIND,
+    TOOL_REFUSAL_KIND,
+};
 
 /// Decoded documents are large by design. Callers move one contract at a time.
 #[allow(clippy::large_enum_variant)]
@@ -255,6 +293,31 @@ pub enum Contract {
     PromptCompilationReport(PromptCompilationReportV1),
     ImageInvalidReport(ImageInvalidReportV1),
     ImageSignatureReport(ImageSignatureReportV1),
+    CofactorReport(CofactorReportV1),
+    ArtifactMissingReport(ArtifactMissingReportV1),
+    ReceiptRequiredReport(ReceiptRequiredReportV1),
+    BackendReport(BackendReportV1),
+    DigestInvalidReport(DigestInvalidReportV1),
+    ReceiptSignReport(ReceiptSignReportV1),
+    CanonicalCborReport(CanonicalCborReportV1),
+    ContractInvalidReport(ContractInvalidReportV1),
+    GrammarRefusalReport(GrammarRefusalReportV1),
+    ToolRefusalReport(ToolRefusalReportV1),
+    ReceiptVerifyReport(ReceiptVerifyReportV1),
+    SpeculativeReport(SpeculativeReportV1),
+    GraphReport(GraphReportV1),
+    MultiModelReport(MultiModelReportV1),
+    SecondaryReport(SecondaryReportV1),
+    DomainReport(DomainReportV1),
+    AttentionReport(AttentionReportV1),
+    MoeReport(MoeReportV1),
+    ExpertPlacementReport(ExpertPlacementReportV1),
+    GroupedKernelReport(GroupedKernelReportV1),
+    RouterReport(RouterReportV1),
+    GlmReport(GlmReportV1),
+    WorkstationReport(WorkstationReportV1),
+    MixedPlacementReport(MixedPlacementReportV1),
+    CapacityReport(CapacityReportV1),
 }
 
 impl Contract {
@@ -435,6 +498,61 @@ impl Contract {
             IMAGE_SIGNATURE_KIND => Ok(Self::ImageSignatureReport(
                 ImageSignatureReportV1::from_cbor(value)?,
             )),
+            COFACTOR_KIND => Ok(Self::CofactorReport(CofactorReportV1::from_cbor(value)?)),
+            ARTIFACT_MISSING_KIND => Ok(Self::ArtifactMissingReport(
+                ArtifactMissingReportV1::from_cbor(value)?,
+            )),
+            RECEIPT_REQUIRED_KIND => Ok(Self::ReceiptRequiredReport(
+                ReceiptRequiredReportV1::from_cbor(value)?,
+            )),
+            BACKEND_KIND => Ok(Self::BackendReport(BackendReportV1::from_cbor(value)?)),
+            DIGEST_INVALID_KIND => Ok(Self::DigestInvalidReport(DigestInvalidReportV1::from_cbor(
+                value,
+            )?)),
+            RECEIPT_SIGN_KIND => Ok(Self::ReceiptSignReport(ReceiptSignReportV1::from_cbor(
+                value,
+            )?)),
+            CANONICAL_CBOR_KIND => Ok(Self::CanonicalCborReport(CanonicalCborReportV1::from_cbor(
+                value,
+            )?)),
+            CONTRACT_INVALID_KIND => Ok(Self::ContractInvalidReport(
+                ContractInvalidReportV1::from_cbor(value)?,
+            )),
+            GRAMMAR_REFUSAL_KIND => Ok(Self::GrammarRefusalReport(
+                GrammarRefusalReportV1::from_cbor(value)?,
+            )),
+            TOOL_REFUSAL_KIND => Ok(Self::ToolRefusalReport(ToolRefusalReportV1::from_cbor(
+                value,
+            )?)),
+            RECEIPT_VERIFY_KIND => Ok(Self::ReceiptVerifyReport(ReceiptVerifyReportV1::from_cbor(
+                value,
+            )?)),
+            SPECULATIVE_KIND => Ok(Self::SpeculativeReport(SpeculativeReportV1::from_cbor(
+                value,
+            )?)),
+            GRAPH_KIND => Ok(Self::GraphReport(GraphReportV1::from_cbor(value)?)),
+            MULTI_MODEL_KIND => Ok(Self::MultiModelReport(MultiModelReportV1::from_cbor(
+                value,
+            )?)),
+            SECONDARY_KIND => Ok(Self::SecondaryReport(SecondaryReportV1::from_cbor(value)?)),
+            DOMAIN_KIND => Ok(Self::DomainReport(DomainReportV1::from_cbor(value)?)),
+            ATTENTION_KIND => Ok(Self::AttentionReport(AttentionReportV1::from_cbor(value)?)),
+            MOE_KIND => Ok(Self::MoeReport(MoeReportV1::from_cbor(value)?)),
+            EXPERT_PLACEMENT_KIND => Ok(Self::ExpertPlacementReport(
+                ExpertPlacementReportV1::from_cbor(value)?,
+            )),
+            GROUPED_KERNEL_KIND => Ok(Self::GroupedKernelReport(GroupedKernelReportV1::from_cbor(
+                value,
+            )?)),
+            ROUTER_KIND => Ok(Self::RouterReport(RouterReportV1::from_cbor(value)?)),
+            GLM_KIND => Ok(Self::GlmReport(GlmReportV1::from_cbor(value)?)),
+            WORKSTATION_KIND => Ok(Self::WorkstationReport(WorkstationReportV1::from_cbor(
+                value,
+            )?)),
+            MIXED_PLACEMENT_KIND => Ok(Self::MixedPlacementReport(
+                MixedPlacementReportV1::from_cbor(value)?,
+            )),
+            CAPACITY_KIND => Ok(Self::CapacityReport(CapacityReportV1::from_cbor(value)?)),
             _ => Err(fail(ErrorCode::ContractInvalid, "unexpected contract kind")),
         }
     }
@@ -534,6 +652,31 @@ impl Contract {
             Self::PromptCompilationReport(_) => PROMPT_COMPILATION_KIND,
             Self::ImageInvalidReport(_) => IMAGE_INVALID_KIND,
             Self::ImageSignatureReport(_) => IMAGE_SIGNATURE_KIND,
+            Self::CofactorReport(_) => COFACTOR_KIND,
+            Self::ArtifactMissingReport(_) => ARTIFACT_MISSING_KIND,
+            Self::ReceiptRequiredReport(_) => RECEIPT_REQUIRED_KIND,
+            Self::BackendReport(_) => BACKEND_KIND,
+            Self::DigestInvalidReport(_) => DIGEST_INVALID_KIND,
+            Self::ReceiptSignReport(_) => RECEIPT_SIGN_KIND,
+            Self::CanonicalCborReport(_) => CANONICAL_CBOR_KIND,
+            Self::ContractInvalidReport(_) => CONTRACT_INVALID_KIND,
+            Self::GrammarRefusalReport(_) => GRAMMAR_REFUSAL_KIND,
+            Self::ToolRefusalReport(_) => TOOL_REFUSAL_KIND,
+            Self::ReceiptVerifyReport(_) => RECEIPT_VERIFY_KIND,
+            Self::SpeculativeReport(_) => SPECULATIVE_KIND,
+            Self::GraphReport(_) => GRAPH_KIND,
+            Self::MultiModelReport(_) => MULTI_MODEL_KIND,
+            Self::SecondaryReport(_) => SECONDARY_KIND,
+            Self::DomainReport(_) => DOMAIN_KIND,
+            Self::AttentionReport(_) => ATTENTION_KIND,
+            Self::MoeReport(_) => MOE_KIND,
+            Self::ExpertPlacementReport(_) => EXPERT_PLACEMENT_KIND,
+            Self::GroupedKernelReport(_) => GROUPED_KERNEL_KIND,
+            Self::RouterReport(_) => ROUTER_KIND,
+            Self::GlmReport(_) => GLM_KIND,
+            Self::WorkstationReport(_) => WORKSTATION_KIND,
+            Self::MixedPlacementReport(_) => MIXED_PLACEMENT_KIND,
+            Self::CapacityReport(_) => CAPACITY_KIND,
         }
     }
 
@@ -632,6 +775,31 @@ impl Contract {
             Self::PromptCompilationReport(v) => v.to_bytes(),
             Self::ImageInvalidReport(v) => v.to_bytes(),
             Self::ImageSignatureReport(v) => v.to_bytes(),
+            Self::CofactorReport(v) => v.to_bytes(),
+            Self::ArtifactMissingReport(v) => v.to_bytes(),
+            Self::ReceiptRequiredReport(v) => v.to_bytes(),
+            Self::BackendReport(v) => v.to_bytes(),
+            Self::DigestInvalidReport(v) => v.to_bytes(),
+            Self::ReceiptSignReport(v) => v.to_bytes(),
+            Self::CanonicalCborReport(v) => v.to_bytes(),
+            Self::ContractInvalidReport(v) => v.to_bytes(),
+            Self::GrammarRefusalReport(v) => v.to_bytes(),
+            Self::ToolRefusalReport(v) => v.to_bytes(),
+            Self::ReceiptVerifyReport(v) => v.to_bytes(),
+            Self::SpeculativeReport(v) => v.to_bytes(),
+            Self::GraphReport(v) => v.to_bytes(),
+            Self::MultiModelReport(v) => v.to_bytes(),
+            Self::SecondaryReport(v) => v.to_bytes(),
+            Self::DomainReport(v) => v.to_bytes(),
+            Self::AttentionReport(v) => v.to_bytes(),
+            Self::MoeReport(v) => v.to_bytes(),
+            Self::ExpertPlacementReport(v) => v.to_bytes(),
+            Self::GroupedKernelReport(v) => v.to_bytes(),
+            Self::RouterReport(v) => v.to_bytes(),
+            Self::GlmReport(v) => v.to_bytes(),
+            Self::WorkstationReport(v) => v.to_bytes(),
+            Self::MixedPlacementReport(v) => v.to_bytes(),
+            Self::CapacityReport(v) => v.to_bytes(),
         }
     }
 }

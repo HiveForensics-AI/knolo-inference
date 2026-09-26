@@ -12,7 +12,7 @@ The contract layer:
 
 - definite-length canonical CBOR, the same subset as Knolo Core KIP-0003
 - domain-separated SHA-256 digests (`sha256-` plus 64 lowercase hex digits)
-- the ninety-three versioned Infer objects, with unknown fields rejected
+- the one hundred eighteen versioned Infer objects, with unknown fields rejected
 - fixed-point sampler settings (no floats in rooted contracts)
 - a Rust crate, `infer-contracts`, and a TypeScript package, `@knolo/infer`, that agree on `conformance/contracts/vectors.json`
 - a cross-check that the shared CBOR subset matches `@knolo/core`
@@ -222,6 +222,31 @@ GGUF:
 - `measure_prompt_compilation` records `PROMPT_COMPILATION_FAILED` on a `knolo.infer.prompt-compilation-report`. The prompt is not compiled. Run and serve do not call it
 - `measure_image_invalid` records `MODEL_IMAGE_INVALID` on a `knolo.infer.image-invalid-report`. An empty image is not parsed. Run and serve do not call it
 - `measure_image_signature` records `MODEL_IMAGE_SIGNATURE_INVALID` on a `knolo.infer.image-signature-report`. Key bytes are not a field. Run and serve do not call it
+- `measure_cofactor` records a host-supplied cofactor clear on a `knolo.infer.cofactor-report`. A cleared cofactor is `verified`. The receipt stays unsigned. Run and serve do not call it
+- `measure_artifact_missing` records `MODEL_ARTIFACT_MISSING` on a `knolo.infer.artifact-missing-report`. Pull does not download. Run and serve do not call it
+- `measure_receipt_required` records `RECEIPT_REQUIRED` on a `knolo.infer.receipt-required-report`. A missing file is HTTP 404. Run and serve do not call it
+- `measure_backend` records `BACKEND_NOT_ALLOWED` on a `knolo.infer.backend-report`. The refused mode is throughput. Run and serve do not call it
+- `measure_digest_invalid` records `DIGEST_INVALID` on a `knolo.infer.digest-invalid-report`. The payload is not hashed. Run and serve do not call it
+- `measure_receipt_sign` records a host-supplied receipt signature on a `knolo.infer.receipt-sign-report`. A signed receipt is `verified`. The receipt stays unverified. Run and serve do not call it
+- `measure_canonical_cbor` records `CANONICAL_CBOR_INVALID` on a `knolo.infer.canonical-cbor-report`. The document is not decoded. Run and serve do not call it
+- `measure_contract_invalid` records `CONTRACT_INVALID` on a `knolo.infer.contract-invalid-report`. The field name is not a field. Run and serve do not call it
+- `measure_grammar_refusal` records a grammar the compiler did not build on a `knolo.infer.grammar-refusal-report`. The grammar is not compiled. Run and serve do not call it
+- `measure_tool_refusal` records a tool call the engine did not execute on a `knolo.infer.tool-refusal-report`. Authority stays unchecked. Run and serve do not call it
+- `measure_receipt_verify` records a host-supplied receipt verification on a `knolo.infer.receipt-verify-report`. A verified receipt is `verified`. The domain stays unseparated. Run and serve do not call it
+- `measure_speculative` records a speculative request the engine did not run on a `knolo.infer.speculative-report`. Accepted tokens stay zero. Run and serve do not call it
+- `measure_cuda_graph` records an uncaptured CUDA graph on a `knolo.infer.graph-report`. The device is `slot-0`. Run and serve do not call it
+- `measure_multi_model` records a second model the worker did not load on a `knolo.infer.multi-model-report`. One resident model stays. Run and serve do not call it
+- `measure_secondary` records a secondary service the worker did not start on a `knolo.infer.secondary-report`. The slot is `slot-1`. Run and serve do not call it
+- `measure_domain` records a host-supplied domain prefix on a `knolo.infer.domain-report`. A separated domain is `verified`. The payload stays unhashed. Run and serve do not call it
+- `measure_attention` records an attention modification that was not applied on a `knolo.infer.attention-report`. Attention stays exact. Run and serve do not call it
+- `measure_moe` records a mixture-of-experts request the router did not run on a `knolo.infer.moe-report`. Selected experts stay zero. Run and serve do not call it
+- `measure_expert_placement` records an expert the planner did not place on a `knolo.infer.expert-placement-report`. Placed experts stay zero. Run and serve do not call it
+- `measure_grouped_kernel` records a grouped kernel that was not selected on a `knolo.infer.grouped-kernel-report`. The code is `UNSUPPORTED_KERNEL`. Run and serve do not call it
+- `measure_router` records router outputs that were not compared on a `knolo.infer.router-report`. Parity stays false. Run and serve do not call it
+- `measure_glm` records `knolo.glm.v1` on a `knolo.infer.glm-report`. The micro adapter issues no report. Run and serve do not call it
+- `measure_workstation` records a workstation recipe that is not blessed on a `knolo.infer.workstation-report`. The benchmark does not run. Run and serve do not call it
+- `measure_mixed_placement` records a mixed placement that was not selected on a `knolo.infer.mixed-placement-report`. Automatic fallback stays off. Run and serve do not call it
+- `measure_capacity` records expert capacity that was not applied on a `knolo.infer.capacity-report`. Capacity tokens stay zero. Run and serve do not call it
 - a manifest with `format: gguf` is still `MODEL_IMAGE_INVALID`
 
 This machine can prove the CPU path. `cargo test --workspace` does not enable CUDA. `knolo-infer run` and `knolo-infer serve` then place the model on `cpu`. With `--features cuda`, both place it on `slot-0` and the receipt names that device. The specs are `spec/KIP-INFER-0022-cuda-run.md` and `spec/KIP-INFER-0023-cuda-serve.md`.
