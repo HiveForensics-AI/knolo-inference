@@ -65,10 +65,16 @@ pub use execution::{
     SAMPLER_ORDER_V1,
 };
 pub use expansion::{
-    AttentionReportV1, CapacityReportV1, DomainReportV1, ExpertPlacementReportV1, GlmReportV1,
-    GroupedKernelReportV1, MixedPlacementReportV1, MoeReportV1, RouterReportV1,
-    WorkstationReportV1, GLM_ADAPTER, MAX_BENCHMARK_COUNT, MAX_CAPACITY_TOKENS, MAX_EXPERTS,
-    MAX_GROUP_COUNT, MAX_PLACEMENT_DEVICES, MAX_ROUTER_SAMPLES, MAX_WINDOW_TOKENS,
+    AttentionReportV1, BindingReportV1, CapacityReportV1, DomainReportV1, ExactAttentionReportV1,
+    ExpertPlacementReportV1, ExtremeCacheReportV1, GlmReportV1, GroupedKernelReportV1,
+    HybridReportV1, LargePlacementReportV1, LinearReportV1, MhcReportV1, MixedPlacementReportV1,
+    MoeReportV1, MtpReportV1, MultimodalReportV1, PayloadReportV1, PositionalReportV1,
+    ResidualReportV1, RmsnormReportV1, RopeReportV1, RouterReportV1, VisionReportV1,
+    WorkstationReportV1, GLM_ADAPTER, MAX_BENCHMARK_COUNT, MAX_CAPACITY_TOKENS, MAX_EXACT_TILES,
+    MAX_EXPERTS, MAX_EXTREME_TOKENS, MAX_GROUP_COUNT, MAX_HYBRID_TOKENS, MAX_LARGE_EXPERTS,
+    MAX_LINEAR_TOKENS, MAX_MHC_STREAMS, MAX_MTP_TOKENS, MAX_MULTIMODAL_PARTS,
+    MAX_PLACEMENT_DEVICES, MAX_POSITIONAL_SCALE, MAX_RESIDUAL_LAYERS, MAX_RMS_LAYERS,
+    MAX_ROPE_LAYERS, MAX_ROUTER_SAMPLES, MAX_VISION_PATCHES, MAX_WINDOW_TOKENS,
 };
 pub use exposure::{
     CacheChannelReportV1, EquationReportV1, RedactionReportV1, SafeErrorReportV1,
@@ -143,8 +149,11 @@ use crate::cbor::{decode_canonical, CborValue};
 use crate::error::{fail, ErrorCode, InferFailure};
 use crate::fields::Fields;
 use expansion::{
-    ATTENTION_KIND, CAPACITY_KIND, DOMAIN_KIND, EXPERT_PLACEMENT_KIND, GLM_KIND,
-    GROUPED_KERNEL_KIND, MIXED_PLACEMENT_KIND, MOE_KIND, ROUTER_KIND, WORKSTATION_KIND,
+    ATTENTION_KIND, BINDING_KIND, CAPACITY_KIND, DOMAIN_KIND, EXACT_ATTENTION_KIND,
+    EXPERT_PLACEMENT_KIND, EXTREME_CACHE_KIND, GLM_KIND, GROUPED_KERNEL_KIND, HYBRID_KIND,
+    LARGE_PLACEMENT_KIND, LINEAR_KIND, MHC_KIND, MIXED_PLACEMENT_KIND, MOE_KIND, MTP_KIND,
+    MULTIMODAL_KIND, PAYLOAD_KIND, POSITIONAL_KIND, RESIDUAL_KIND, RMSNORM_KIND, ROPE_KIND,
+    ROUTER_KIND, VISION_KIND, WORKSTATION_KIND,
 };
 
 use admission::{CONCURRENT_LOAD_KIND, DUPLICATE_KIND, EVICTION_KIND, POINT_KIND};
@@ -318,6 +327,21 @@ pub enum Contract {
     WorkstationReport(WorkstationReportV1),
     MixedPlacementReport(MixedPlacementReportV1),
     CapacityReport(CapacityReportV1),
+    PayloadReport(PayloadReportV1),
+    HybridReport(HybridReportV1),
+    LinearReport(LinearReportV1),
+    MhcReport(MhcReportV1),
+    MtpReport(MtpReportV1),
+    BindingReport(BindingReportV1),
+    MultimodalReport(MultimodalReportV1),
+    LargePlacementReport(LargePlacementReportV1),
+    ExtremeCacheReport(ExtremeCacheReportV1),
+    VisionReport(VisionReportV1),
+    PositionalReport(PositionalReportV1),
+    ExactAttentionReport(ExactAttentionReportV1),
+    RmsnormReport(RmsnormReportV1),
+    RopeReport(RopeReportV1),
+    ResidualReport(ResidualReportV1),
 }
 
 impl Contract {
@@ -553,6 +577,31 @@ impl Contract {
                 MixedPlacementReportV1::from_cbor(value)?,
             )),
             CAPACITY_KIND => Ok(Self::CapacityReport(CapacityReportV1::from_cbor(value)?)),
+            PAYLOAD_KIND => Ok(Self::PayloadReport(PayloadReportV1::from_cbor(value)?)),
+            HYBRID_KIND => Ok(Self::HybridReport(HybridReportV1::from_cbor(value)?)),
+            LINEAR_KIND => Ok(Self::LinearReport(LinearReportV1::from_cbor(value)?)),
+            MHC_KIND => Ok(Self::MhcReport(MhcReportV1::from_cbor(value)?)),
+            MTP_KIND => Ok(Self::MtpReport(MtpReportV1::from_cbor(value)?)),
+            BINDING_KIND => Ok(Self::BindingReport(BindingReportV1::from_cbor(value)?)),
+            MULTIMODAL_KIND => Ok(Self::MultimodalReport(MultimodalReportV1::from_cbor(
+                value,
+            )?)),
+            LARGE_PLACEMENT_KIND => Ok(Self::LargePlacementReport(
+                LargePlacementReportV1::from_cbor(value)?,
+            )),
+            EXTREME_CACHE_KIND => Ok(Self::ExtremeCacheReport(ExtremeCacheReportV1::from_cbor(
+                value,
+            )?)),
+            VISION_KIND => Ok(Self::VisionReport(VisionReportV1::from_cbor(value)?)),
+            POSITIONAL_KIND => Ok(Self::PositionalReport(PositionalReportV1::from_cbor(
+                value,
+            )?)),
+            EXACT_ATTENTION_KIND => Ok(Self::ExactAttentionReport(
+                ExactAttentionReportV1::from_cbor(value)?,
+            )),
+            RMSNORM_KIND => Ok(Self::RmsnormReport(RmsnormReportV1::from_cbor(value)?)),
+            ROPE_KIND => Ok(Self::RopeReport(RopeReportV1::from_cbor(value)?)),
+            RESIDUAL_KIND => Ok(Self::ResidualReport(ResidualReportV1::from_cbor(value)?)),
             _ => Err(fail(ErrorCode::ContractInvalid, "unexpected contract kind")),
         }
     }
@@ -677,6 +726,21 @@ impl Contract {
             Self::WorkstationReport(_) => WORKSTATION_KIND,
             Self::MixedPlacementReport(_) => MIXED_PLACEMENT_KIND,
             Self::CapacityReport(_) => CAPACITY_KIND,
+            Self::PayloadReport(_) => PAYLOAD_KIND,
+            Self::HybridReport(_) => HYBRID_KIND,
+            Self::LinearReport(_) => LINEAR_KIND,
+            Self::MhcReport(_) => MHC_KIND,
+            Self::MtpReport(_) => MTP_KIND,
+            Self::BindingReport(_) => BINDING_KIND,
+            Self::MultimodalReport(_) => MULTIMODAL_KIND,
+            Self::LargePlacementReport(_) => LARGE_PLACEMENT_KIND,
+            Self::ExtremeCacheReport(_) => EXTREME_CACHE_KIND,
+            Self::VisionReport(_) => VISION_KIND,
+            Self::PositionalReport(_) => POSITIONAL_KIND,
+            Self::ExactAttentionReport(_) => EXACT_ATTENTION_KIND,
+            Self::RmsnormReport(_) => RMSNORM_KIND,
+            Self::RopeReport(_) => ROPE_KIND,
+            Self::ResidualReport(_) => RESIDUAL_KIND,
         }
     }
 
@@ -800,6 +864,21 @@ impl Contract {
             Self::WorkstationReport(v) => v.to_bytes(),
             Self::MixedPlacementReport(v) => v.to_bytes(),
             Self::CapacityReport(v) => v.to_bytes(),
+            Self::PayloadReport(v) => v.to_bytes(),
+            Self::HybridReport(v) => v.to_bytes(),
+            Self::LinearReport(v) => v.to_bytes(),
+            Self::MhcReport(v) => v.to_bytes(),
+            Self::MtpReport(v) => v.to_bytes(),
+            Self::BindingReport(v) => v.to_bytes(),
+            Self::MultimodalReport(v) => v.to_bytes(),
+            Self::LargePlacementReport(v) => v.to_bytes(),
+            Self::ExtremeCacheReport(v) => v.to_bytes(),
+            Self::VisionReport(v) => v.to_bytes(),
+            Self::PositionalReport(v) => v.to_bytes(),
+            Self::ExactAttentionReport(v) => v.to_bytes(),
+            Self::RmsnormReport(v) => v.to_bytes(),
+            Self::RopeReport(v) => v.to_bytes(),
+            Self::ResidualReport(v) => v.to_bytes(),
         }
     }
 }

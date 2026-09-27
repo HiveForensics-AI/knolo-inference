@@ -12,7 +12,7 @@ The contract layer:
 
 - definite-length canonical CBOR, the same subset as Knolo Core KIP-0003
 - domain-separated SHA-256 digests (`sha256-` plus 64 lowercase hex digits)
-- the one hundred eighteen versioned Infer objects, with unknown fields rejected
+- the one hundred thirty-three versioned Infer objects, with unknown fields rejected
 - fixed-point sampler settings (no floats in rooted contracts)
 - a Rust crate, `infer-contracts`, and a TypeScript package, `@knolo/infer`, that agree on `conformance/contracts/vectors.json`
 - a cross-check that the shared CBOR subset matches `@knolo/core`
@@ -247,6 +247,21 @@ GGUF:
 - `measure_workstation` records a workstation recipe that is not blessed on a `knolo.infer.workstation-report`. The benchmark does not run. Run and serve do not call it
 - `measure_mixed_placement` records a mixed placement that was not selected on a `knolo.infer.mixed-placement-report`. Automatic fallback stays off. Run and serve do not call it
 - `measure_capacity` records expert capacity that was not applied on a `knolo.infer.capacity-report`. Capacity tokens stay zero. Run and serve do not call it
+- `measure_payload` records a host-supplied payload hash on a `knolo.infer.payload-report`. A hashed payload is `verified`. The digest stays unbound. Run and serve do not call it
+- `measure_hybrid` records a hybrid attention state that was not allocated on a `knolo.infer.hybrid-report`. Attention stays exact. Run and serve do not call it
+- `measure_linear` records linear attention that was not applied on a `knolo.infer.linear-report`. Attention stays exact. Run and serve do not call it
+- `measure_mhc` records an mHC connection that was not applied on a `knolo.infer.mhc-report`. Applied streams stay zero. Run and serve do not call it
+- `measure_mtp` records an MTP head the engine did not run on a `knolo.infer.mtp-report`. Accepted tokens stay zero. Run and serve do not call it
+- `measure_binding` records a host-supplied digest binding on a `knolo.infer.binding-report`. A bound digest is `verified`. Evidence stays unbound. Run and serve do not call it
+- `measure_multimodal` records a media part the engine did not open on a `knolo.infer.multimodal-report`. Accepted parts stay zero. Run and serve do not call it
+- `measure_large_placement` records a large expert placement the planner did not apply on a `knolo.infer.large-placement-report`. Placed experts stay zero. Run and serve do not call it
+- `measure_extreme_cache` records an extreme-context policy the engine did not apply on a `knolo.infer.extreme-cache-report`. Cached tokens stay zero. Run and serve do not call it
+- `measure_vision` records a vision projector the engine did not run on a `knolo.infer.vision-report`. Projected tokens stay zero. Run and serve do not call it
+- `measure_positional` records a positional extension the engine did not apply on a `knolo.infer.positional-report`. Applied scale stays zero. Run and serve do not call it
+- `measure_exact_attention` records an exact attention kernel that was not selected on a `knolo.infer.exact-attention-report`. Selected tiles stay zero. Run and serve do not call it
+- `measure_rmsnorm` records an RMSNorm kernel that was not applied on a `knolo.infer.rmsnorm-report`. Applied layers stay zero. Run and serve do not call it
+- `measure_rope` records a RoPE kernel that was not applied on a `knolo.infer.rope-report`. Applied layers stay zero. Run and serve do not call it
+- `measure_residual` records a fused residual the engine did not apply on a `knolo.infer.residual-report`. Applied layers stay zero. Run and serve do not call it
 - a manifest with `format: gguf` is still `MODEL_IMAGE_INVALID`
 
 This machine can prove the CPU path. `cargo test --workspace` does not enable CUDA. `knolo-infer run` and `knolo-infer serve` then place the model on `cpu`. With `--features cuda`, both place it on `slot-0` and the receipt names that device. The specs are `spec/KIP-INFER-0022-cuda-run.md` and `spec/KIP-INFER-0023-cuda-serve.md`.

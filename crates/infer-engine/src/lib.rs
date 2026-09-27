@@ -106,6 +106,21 @@
 //! `measure_workstation` records the workstation report.
 //! `measure_mixed_placement` records the mixed-placement report.
 //! `measure_capacity` records the capacity report.
+//! `measure_payload` records the payload-hash report.
+//! `measure_hybrid` records the hybrid-attention report.
+//! `measure_linear` records the linear-attention report.
+//! `measure_mhc` records the mHC report.
+//! `measure_mtp` records the MTP report.
+//! `measure_binding` records the digest-binding report.
+//! `measure_multimodal` records the multimodal report.
+//! `measure_large_placement` records the large-placement report.
+//! `measure_extreme_cache` records the extreme-cache report.
+//! `measure_vision` records the vision report.
+//! `measure_positional` records the positional report.
+//! `measure_exact_attention` records the exact-attention report.
+//! `measure_rmsnorm` records the RMSNorm report.
+//! `measure_rope` records the RoPE report.
+//! `measure_residual` records the residual report.
 //! None of them runs the model. This crate does
 //! not start a server. A
 //! CUDA placement plan names `slot-0`. `infer-native` selects that kernel.
@@ -135,6 +150,7 @@ mod conversion;
 mod curve;
 mod daemon_restart;
 mod dequant;
+mod digest_binding;
 mod digest_invalid;
 mod digest_mismatch;
 mod disconnect;
@@ -146,7 +162,9 @@ mod equality;
 mod equation;
 mod eviction;
 mod evidence;
+mod exact_attention;
 mod expert_placement;
+mod extreme_cache;
 mod fault;
 mod finalization;
 mod fuzz;
@@ -158,6 +176,7 @@ mod grouped_kernel;
 mod hardware;
 mod host_key;
 mod hub;
+mod hybrid;
 mod identity;
 mod image_invalid;
 mod image_signature;
@@ -165,23 +184,30 @@ mod install;
 mod journal;
 mod kernel;
 mod kv;
+mod large_placement;
 mod latency;
+mod linear;
 mod load;
 mod memory;
 mod memory_refusal;
+mod mhc;
 mod micro;
 mod mixed_placement;
 mod moe;
+mod mtp;
 mod multi_model;
+mod multimodal;
 mod notice;
 mod oom;
 mod overhead;
 mod paged;
+mod payload_hash;
 mod peak;
 mod perplexity;
 mod philox;
 mod placement_refusal;
 mod point;
+mod positional;
 mod prefix;
 mod prompt_compilation;
 mod public_key;
@@ -201,7 +227,10 @@ mod replay_environment;
 mod replay_output;
 mod report_io;
 mod reproducible;
+mod residual;
+mod rmsnorm;
 mod rollback;
+mod rope;
 mod router;
 mod safe_error;
 mod sample;
@@ -222,6 +251,7 @@ mod tool_refusal;
 mod traits;
 mod utilization;
 mod verification;
+mod vision;
 mod worker_lost;
 mod worker_start;
 mod workstation;
@@ -303,6 +333,9 @@ pub use daemon_restart::{
     RestartObservation,
 };
 pub use dequant::{dequant_gguf, dequant_output_bytes, MAX_DEQUANT_BYTES};
+pub use digest_binding::{
+    measure_binding, verify_binding, write_binding_report, BindingObservation, MicroBinding,
+};
 pub use digest_invalid::{
     measure_digest_invalid, verify_digest_invalid, write_digest_invalid_report,
     DigestInvalidObservation, MicroDigestInvalid,
@@ -342,9 +375,17 @@ pub use evidence::{
     measure_evidence_output, verify_evidence_output, write_evidence_output_report,
     EvidenceObservation, MicroEvidenceOutput,
 };
+pub use exact_attention::{
+    measure_exact_attention, verify_exact_attention, write_exact_attention_report,
+    ExactAttentionObservation, MicroExactAttention,
+};
 pub use expert_placement::{
     measure_expert_placement, verify_expert_placement, write_expert_placement_report,
     ExpertPlacementObservation, MicroExpertPlacement,
+};
+pub use extreme_cache::{
+    measure_extreme_cache, verify_extreme_cache, write_extreme_cache_report,
+    ExtremeCacheObservation, MicroExtremeCache,
 };
 pub use fault::{
     measure_cuda_fault, verify_cuda_fault, write_fault_report, FaultObservation, MicroFault,
@@ -375,6 +416,9 @@ pub use host_key::{
     measure_host_key, verify_host_key, write_host_key_report, HostKeyObservation, MicroHostKey,
 };
 pub use hub::{measure_hub_record, verify_hub_record, write_hub_report, HubObservation, MicroHub};
+pub use hybrid::{
+    measure_hybrid, verify_hybrid, write_hybrid_report, HybridObservation, MicroHybrid,
+};
 pub use identity::{
     cargo_lock_root, cpu_kernel_bundle, cpu_kernel_plan_root, cuda_engine_build,
     cuda_kernel_bundle, cuda_kernel_plan_root, host_engine_build, reference_engine_build,
@@ -396,9 +440,16 @@ pub use kernel::{
     measure_kernel, verify_kernel, write_kernel_report, KernelObservation, MicroKernel,
 };
 pub use kv::SingleBlockKv;
+pub use large_placement::{
+    measure_large_placement, verify_large_placement, write_large_placement_report,
+    LargePlacementObservation, MicroLargePlacement,
+};
 pub use latency::{
     measure_micro_latency, verify_micro_latency, write_latency_report, LatencyObservation,
     MicroLatency,
+};
+pub use linear::{
+    measure_linear, verify_linear, write_linear_report, LinearObservation, MicroLinear,
 };
 pub use load::{
     measure_model_load, verify_model_load, write_load_report, LoadObservation, MicroLoad,
@@ -411,15 +462,21 @@ pub use memory_refusal::{
     measure_memory_refusal, verify_memory_refusal, write_memory_refusal_report,
     MemoryRefusalObservation, MicroMemoryRefusal,
 };
+pub use mhc::{measure_mhc, verify_mhc, write_mhc_report, MhcObservation, MicroMhc};
 pub use micro::*;
 pub use mixed_placement::{
     measure_mixed_placement, verify_mixed_placement, write_mixed_placement_report,
     MicroMixedPlacement, MixedPlacementObservation,
 };
 pub use moe::{measure_moe, verify_moe, write_moe_report, MicroMoe, MoeObservation};
+pub use mtp::{measure_mtp, verify_mtp, write_mtp_report, MicroMtp, MtpObservation};
 pub use multi_model::{
     measure_multi_model, verify_multi_model, write_multi_model_report, MicroMultiModel,
     MultiModelObservation,
+};
+pub use multimodal::{
+    measure_multimodal, verify_multimodal, write_multimodal_report, MicroMultimodal,
+    MultimodalObservation,
 };
 pub use notice::{
     measure_supply_notice, verify_supply_notice, write_notice_report, MicroNotice,
@@ -431,6 +488,9 @@ pub use overhead::{
     OverheadObservation,
 };
 pub use paged::{KvCensus, PagedKv, CPU_KV_PAGE_POOL};
+pub use payload_hash::{
+    measure_payload, verify_payload, write_payload_report, MicroPayload, PayloadObservation,
+};
 pub use peak::{
     measure_peak_memory, verify_peak_memory, write_peak_report, MicroPeak, PeakObservation,
 };
@@ -443,6 +503,10 @@ pub use placement_refusal::{
     MicroPlacementRefusal, PlacementRefusalObservation,
 };
 pub use point::{measure_point, verify_point, write_point_report, MicroPoint, PointObservation};
+pub use positional::{
+    measure_positional, verify_positional, write_positional_report, MicroPositional,
+    PositionalObservation,
+};
 pub use prefix::{
     measure_prefix_reuse, verify_prefix_reuse, write_prefix_report, MicroPrefix, PrefixObservation,
 };
@@ -512,9 +576,16 @@ pub use reproducible::{
     measure_reproducible_build, verify_reproducible_build, write_reproducible_report,
     MicroReproducible, ReproducibleObservation,
 };
+pub use residual::{
+    measure_residual, verify_residual, write_residual_report, MicroResidual, ResidualObservation,
+};
+pub use rmsnorm::{
+    measure_rmsnorm, verify_rmsnorm, write_rmsnorm_report, MicroRmsnorm, RmsnormObservation,
+};
 pub use rollback::{
     measure_rollback, verify_rollback, write_rollback_report, MicroRollback, RollbackObservation,
 };
+pub use rope::{measure_rope, verify_rope, write_rope_report, MicroRope, RopeObservation};
 pub use router::{
     measure_router, verify_router, write_router_report, MicroRouter, RouterObservation,
 };
@@ -583,6 +654,9 @@ pub use utilization::{
 pub use verification::{
     measure_model_verification, verify_model_verification, write_verification_report,
     MicroVerification, VerificationObservation,
+};
+pub use vision::{
+    measure_vision, verify_vision, write_vision_report, MicroVision, VisionObservation,
 };
 pub use worker_lost::{
     measure_worker_lost, verify_worker_lost, write_worker_lost_report, MicroWorkerLost,
