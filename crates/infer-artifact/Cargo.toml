@@ -8,6 +8,7 @@ publish.workspace = true
 rust-version.workspace = true
 
 [dependencies]
+ed25519-dalek = "=2.2.0"
 infer-contracts = { path = "../infer-contracts" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

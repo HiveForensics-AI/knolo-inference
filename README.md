@@ -23,7 +23,7 @@ The model-image layer:
 - tokenizer and template bytes are embedded; weight bytes stay in external files
 - safetensors headers are checked against the tensor inventory after the file hash matches
 - `knolo.infer.lock.json` pins an alias to the model-image root, artifact root, and relative path
-- `knolo-infer pull` is refused until download staging exists
+- `knolo-infer pull` copies the pinned local image and weight files after the digests match. It does not open a network connection
 
 The CPU micro-model:
 
@@ -33,9 +33,17 @@ The CPU micro-model:
 - greedy token ids must match exactly, and logits must agree within absolute tolerance `1e-4`
 - an unknown architecture fails before weight files are opened
 
+The tiny Llama fixture:
+
+- `models/llama-tiny/` is a generated `knolo.llama.v1` model: vocabulary 32, hidden size 8, two layers, safetensors `f32`, plus `f16` and `bf16` twins
+- `verify`, `pin`, `pull`, `plan`, `run`, and `serve --model daily` accept that image the same way they accept the micro-model
+- a `format: gguf` manifest compiles for `knolo.llama.v1` when every tensor is one of `f32`, `f16`, `q8_0`, `q4_k_m`, `q5_k_m`, or `q6_k`. A micro manifest with `format: gguf` stays `MODEL_IMAGE_INVALID`
+- greedy token ids match the f32 oracle, and logits agree within absolute tolerance `1e-4`
+- a pinned run accepts `--knowledge-image`, `--query-receipt`, `--reflex-receipt`, and `--sign-key`. `receipt verify` on a copy of the image, weights, lock, receipt, and public key checks the signature, the artifact root, and the knowledge binding
+
 Prompt, sampler, and receipts:
 
-- `infer-prompt` renders one allowlisted message loop and encodes `knolo.micro.tokens.v1`
+- `infer-prompt` renders one allowlisted message loop and encodes `knolo.micro.tokens.v1` or `knolo.llama.tokens.v1`
 - temperature 0 is lowest-id argmax; a non-zero temperature uses Philox-4x32-10
 - `knolo-infer run` writes an append-only journal before the forward pass and a receipt of roots
 - `knolo-infer receipt verify` checks that receipt; `knolo-infer replay` is what sets `exact_replay_verified`
@@ -78,7 +86,7 @@ Serve-path receipt journal:
 - `knolo-infer serve` fsyncs `accepted` before it sends the request to the worker
 - a `stop` or `length` completion stores a receipt of roots and returns its id in the body
 - a native stream ends that completion with `knolo.receipt`; the stream header says `pending` until then
-- assurance on this path is `compatibility`, because the worker does not rerun the sequence
+- assurance on this path is `same_build_replayable`. The worker does not rerun the sequence to label the first response. `replay` is what sets `exact_replay_verified`
 - without the `cuda` feature the worker stays the reference oracle, so the receipt names `reference-f32` and the worker does not link Candle
 - with `--features cuda` the worker places the model on `slot-0`, the receipt names that device, and the kernel bundle is the CUDA run bundle
 - `GET /knolo/infer/v1/receipts/sha256-<hex>` reads that receipt back; a cancellation does not store one
@@ -262,7 +270,7 @@ GGUF:
 - `measure_rmsnorm` records an RMSNorm kernel that was not applied on a `knolo.infer.rmsnorm-report`. Applied layers stay zero. Run and serve do not call it
 - `measure_rope` records a RoPE kernel that was not applied on a `knolo.infer.rope-report`. Applied layers stay zero. Run and serve do not call it
 - `measure_residual` records a fused residual the engine did not apply on a `knolo.infer.residual-report`. Applied layers stay zero. Run and serve do not call it
-- a manifest with `format: gguf` is still `MODEL_IMAGE_INVALID`
+- a micro manifest with `format: gguf` stays `MODEL_IMAGE_INVALID`. A `knolo.llama.v1` manifest with that format compiles when the precision is allowlisted
 
 This machine can prove the CPU path. `cargo test --workspace` does not enable CUDA. `knolo-infer run` and `knolo-infer serve` then place the model on `cpu`. With `--features cuda`, both place it on `slot-0` and the receipt names that device. The specs are `spec/KIP-INFER-0022-cuda-run.md` and `spec/KIP-INFER-0023-cuda-serve.md`.
 
@@ -274,7 +282,7 @@ npm install
 npm test
 ```
 
-`cargo test -p infer-engine` rewrites `models/micro-transformer/` and `conformance/micro-model/expected.json`. `cargo test -p infer-native` checks Candle CPU against the live oracle. Neither test uses the network.
+`cargo test -p infer-engine` rewrites `models/micro-transformer/`, `models/llama-tiny/`, `conformance/micro-model/expected.json`, and `conformance/llama-tiny/expected.json`. `cargo test -p infer-native` checks Candle CPU against the live oracle. Neither test uses the network.
 
 Build and check a model image:
 
@@ -284,12 +292,22 @@ cargo run -p infer-cli -- model verify /tmp/micro.kmodel --weights conformance/m
 cargo run -p infer-cli -- pin micro conformance/model-image/micro.kmodel --weights conformance/model-image
 ```
 
+Pin the checked-in llama fixture as `daily` from the repository root:
+
+```bash
+cargo run -p infer-cli -- model verify models/llama-tiny/llama.kmodel --weights models/llama-tiny
+cargo run -p infer-cli -- pin daily models/llama-tiny/llama.kmodel --weights models/llama-tiny
+cargo run -p infer-cli -- pull daily
+cargo run -p infer-cli -- plan daily --intent interactive
+cargo run -p infer-cli -- serve --model daily
+```
+
 Rust 1.85 or newer and Node.js 22 are enough for the default build. CUDA is not required for `cargo test --workspace`. A CUDA run needs `nvcc` on `PATH`. `CUDA_ROOT` and `CUDA_HOME` are the toolkit prefix. `LD_LIBRARY_PATH` includes that prefix's `lib` directory, which is where `libcublas` is loaded. `cudarc` reads `CUDA_ROOT`.
 
 ```bash
 cargo test -p infer-native --features cuda --offline
 cargo test -p infer-receipt --features cuda --lib cuda_run --offline
-cargo test -p infer-cli --features cuda --test cli cli_runs_verifies --offline
+cargo test -p infer-cli --features cuda --test cli --offline
 cargo test -p infer-serve --features cuda --offline
 ```
 
@@ -301,9 +319,9 @@ cargo test -p infer-serve --features cuda --offline
 spec/                         KIP-INFER contracts, including serve metrics, traces, drain, unload, restart, and the memory soak
 crates/infer-contracts/       Rust canonical contracts
 crates/infer-artifact/        .kmodel compiler, safetensors inventory, lockfile
-crates/infer-prompt/          bounded template and micro tokenizer
-crates/infer-engine/          f32 oracle, micro-transformer, sampler, paged KV, scheduler
-crates/infer-native/          Candle CPU micro-transformer
+crates/infer-prompt/          bounded template and micro and llama tokenizers
+crates/infer-engine/          f32 oracle, micro-transformer, llama-tiny, sampler, paged KV, scheduler
+crates/infer-native/          Candle CPU and CUDA adapters
 crates/infer-receipt/         journal, engine identity, receipt verification
 crates/infer-serve/           supervisor, worker process, loopback HTTP
 crates/infer-cli/             knolo-infer binary
@@ -311,10 +329,12 @@ packages/infer/               @knolo/infer verifier
 conformance/contracts/        shared golden vectors
 conformance/model-image/      authoring fixture and generated .kmodel
 conformance/micro-model/      oracle logits and greedy tokens
+conformance/llama-tiny/       llama oracle logits and greedy tokens
 conformance/prompt/           shared prompt render and token-id roots
-models/micro-transformer/     synthetic weights and .kmodel
+models/micro-transformer/     synthetic micro weights and .kmodel
+models/llama-tiny/            synthetic llama weights and .kmodel
 docs/SECURITY_MODEL.md        parser and trust constraints
-docs/CPU_REFERENCE.md         CPU micro-model limits
+docs/CPU_REFERENCE.md         CPU model limits
 docs/MILESTONE_1_CONFORMANCE.md  Milestone 1 gate review
 ```
 

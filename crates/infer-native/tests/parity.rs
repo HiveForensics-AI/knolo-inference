@@ -3,14 +3,15 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use infer_contracts::ErrorCode;
-#[cfg(feature = "cuda")]
-use infer_engine::cuda_placement;
 use infer_engine::{
-    argmax, cpu_placement, greedy_generate, load_verified_micro, logit_margin, micro_kv_layout,
-    write_synthetic_model, ArchitectureAdapter, ExecutableModel, KvSnapshot, KvStore,
-    ReferenceF32Backend, SingleBlockKv, TensorBackend, ADAPTER_ID, FIXTURE_CASES,
-    LOGIT_ABS_TOLERANCE, MIN_GREEDY_MARGIN, VOCAB,
+    argmax, cpu_placement, greedy_generate, llama_cpu_placement, llama_kv_layout,
+    load_verified_micro, load_verified_model, logit_margin, micro_kv_layout, write_llama_model,
+    write_synthetic_model, ExecutableModel, KvSnapshot, KvStore,
+    ReferenceF32Backend, SingleBlockKv, TensorBackend, ADAPTER_ID, FIXTURE_CASES, LLAMA_ADAPTER_ID,
+    LLAMA_FIXTURE_CASES, LLAMA_VOCAB, LOGIT_ABS_TOLERANCE, MIN_GREEDY_MARGIN, VOCAB,
 };
+#[cfg(feature = "cuda")]
+use infer_engine::{cuda_placement, llama_cuda_placement};
 #[cfg(feature = "cuda")]
 use infer_native::CandleCudaBackend;
 use infer_native::{cpu_adapter_by_id, CandleCpuBackend, CANDLE_CPU_VERSION};
@@ -168,7 +169,7 @@ fn candle_adapter_rejects_unknown_architecture_and_cuda() {
     let dir = scratch();
     write_synthetic_model(&dir).unwrap();
     let source = load_verified_micro(&dir.join("micro.kmodel"), &dir).unwrap();
-    assert!(cpu_adapter_by_id("knolo.llama.v1").is_err());
+    assert!(cpu_adapter_by_id("knolo.missing.v1").is_err());
     match cpu_adapter_by_id(ADAPTER_ID).unwrap().build(
         &source,
         &cpu_placement(&source).unwrap(),
@@ -194,4 +195,107 @@ fn candle_adapter_rejects_unknown_architecture_and_cuda() {
     .unwrap_err();
     assert_eq!(err.code, ErrorCode::ContextLimitExceeded);
     assert_eq!(kv.token_len(1).unwrap(), 0);
+}
+
+#[test]
+fn candle_cpu_llama_matches_oracle_logits_and_greedy_tokens() {
+    let dir = scratch();
+    write_llama_model(&dir).unwrap();
+    let source = load_verified_model(&dir.join("llama.kmodel"), &dir).unwrap();
+    let placement = llama_cpu_placement(&source).unwrap();
+    let adapter = cpu_adapter_by_id(LLAMA_ADAPTER_ID).unwrap();
+    let mut oracle = adapter
+        .build(&source, &placement, &ReferenceF32Backend)
+        .unwrap();
+    let mut candle = adapter
+        .build(&source, &placement, &CandleCpuBackend)
+        .unwrap();
+    for fixture in LLAMA_FIXTURE_CASES {
+        let mut oracle_kv = SingleBlockKv::new(llama_kv_layout()).unwrap();
+        let mut candle_kv = SingleBlockKv::new(llama_kv_layout()).unwrap();
+        let oracle_out = greedy_generate(
+            oracle.as_mut(),
+            &mut oracle_kv,
+            1,
+            fixture.prompt,
+            fixture.new_tokens,
+        )
+        .unwrap();
+        let candle_out = greedy_generate(
+            candle.as_mut(),
+            &mut candle_kv,
+            1,
+            fixture.prompt,
+            fixture.new_tokens,
+        )
+        .unwrap();
+        let diff = max_abs(&oracle_out.prefill_logits, &candle_out.prefill_logits);
+        assert!(
+            diff <= LOGIT_ABS_TOLERANCE,
+            "{} prefill logit diff {diff} exceeds {LOGIT_ABS_TOLERANCE}",
+            fixture.name
+        );
+        assert_eq!(candle_out.tokens, oracle_out.tokens, "{}", fixture.name);
+        assert_eq!(oracle_out.prefill_logits.len(), LLAMA_VOCAB);
+        assert_snapshots_close(
+            &oracle_kv.snapshot(1).unwrap(),
+            &candle_kv.snapshot(1).unwrap(),
+            fixture.name,
+        );
+    }
+}
+
+#[cfg(feature = "cuda")]
+#[test]
+fn candle_cuda_llama_matches_oracle_logits_and_greedy_tokens() {
+    let dir = scratch();
+    write_llama_model(&dir).unwrap();
+    let source = load_verified_model(&dir.join("llama.kmodel"), &dir).unwrap();
+    let adapter = cpu_adapter_by_id(LLAMA_ADAPTER_ID).unwrap();
+    let mut oracle = adapter
+        .build(
+            &source,
+            &llama_cpu_placement(&source).unwrap(),
+            &ReferenceF32Backend,
+        )
+        .unwrap();
+    let mut candle = adapter
+        .build(
+            &source,
+            &llama_cuda_placement(&source).unwrap(),
+            &CandleCudaBackend,
+        )
+        .unwrap();
+    for fixture in LLAMA_FIXTURE_CASES {
+        let mut oracle_kv = SingleBlockKv::new(llama_kv_layout()).unwrap();
+        let mut candle_kv = SingleBlockKv::new(llama_kv_layout()).unwrap();
+        let oracle_out = greedy_generate(
+            oracle.as_mut(),
+            &mut oracle_kv,
+            1,
+            fixture.prompt,
+            fixture.new_tokens,
+        )
+        .unwrap();
+        let candle_out = greedy_generate(
+            candle.as_mut(),
+            &mut candle_kv,
+            1,
+            fixture.prompt,
+            fixture.new_tokens,
+        )
+        .unwrap();
+        let diff = max_abs(&oracle_out.prefill_logits, &candle_out.prefill_logits);
+        assert!(
+            diff <= LOGIT_ABS_TOLERANCE,
+            "{} prefill logit diff {diff} exceeds {LOGIT_ABS_TOLERANCE}",
+            fixture.name
+        );
+        assert_eq!(candle_out.tokens, oracle_out.tokens, "{}", fixture.name);
+        assert_snapshots_close(
+            &oracle_kv.snapshot(1).unwrap(),
+            &candle_kv.snapshot(1).unwrap(),
+            fixture.name,
+        );
+    }
 }

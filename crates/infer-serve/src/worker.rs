@@ -15,13 +15,19 @@ use std::time::{Duration, Instant};
 
 use infer_contracts::{fail, CborValue, ErrorCode, InferFailure};
 #[cfg(not(feature = "cuda"))]
-use infer_engine::{accept_cpu_placement, cpu_placement, MicroAdapter, ReferenceF32Backend};
-#[cfg(feature = "cuda")]
-use infer_engine::{accept_cuda_placement, cuda_placement, require_cuda_slot0, ADAPTER_ID};
 use infer_engine::{
-    load_verified_micro, micro_kv_layout, ArchitectureAdapter, CpuScheduler, ExecutableModel,
-    PagedKv, ScheduleOp, ScheduleRequest, SchedulerConfig, VerifiedWeightSource, BLOCK_SIZE,
-    CPU_KV_PAGE_POOL, MAX_CONTEXT,
+    accept_cpu_placement, accept_llama_placement, cpu_placement, llama_cpu_placement,
+    ArchitectureAdapter, LlamaAdapter, MicroAdapter, ReferenceF32Backend,
+};
+#[cfg(feature = "cuda")]
+use infer_engine::{
+    accept_cuda_placement, accept_llama_placement, cuda_placement, llama_cuda_placement,
+    require_cuda_slot0, ADAPTER_ID,
+};
+use infer_engine::{
+    load_verified_model, CpuScheduler, ExecutableModel, PagedKv, ScheduleOp, ScheduleRequest,
+    SchedulerConfig, VerifiedWeightSource, BLOCK_SIZE, CPU_KV_PAGE_POOL, LLAMA_ADAPTER_ID,
+    MAX_CONTEXT,
 };
 #[cfg(feature = "cuda")]
 use infer_native::{cpu_adapter_by_id, CandleCudaBackend};
@@ -65,7 +71,7 @@ fn run_worker(args: impl Iterator<Item = String>) -> Result<(), InferFailure> {
         &config.alias,
         config.weights_dir.as_deref(),
     )?;
-    let source = load_verified_micro(&pinned.kmodel, &pinned.weights)?;
+    let source = load_verified_model(&pinned.kmodel, &pinned.weights)?;
     if source.runtime_root.as_str() != pinned.runtime_root {
         return Err(fail(
             ErrorCode::ModelDigestMismatch,
@@ -75,7 +81,7 @@ fn run_worker(args: impl Iterator<Item = String>) -> Result<(), InferFailure> {
     let verified_bytes = source.weight_bytes;
     let model = build_model(&source)?;
     let model_load_nanos = u64::try_from(started.elapsed().as_nanos()).unwrap_or(u64::MAX);
-    let kv = PagedKv::new(micro_kv_layout(), CPU_KV_PAGE_POOL)?;
+    let kv = PagedKv::new(model.kv_layout(), CPU_KV_PAGE_POOL)?;
     let scheduler = CpuScheduler::new(SchedulerConfig::new(
         source.runtime_root.as_str(),
         MAX_CONTEXT,
@@ -104,6 +110,11 @@ fn run_worker(args: impl Iterator<Item = String>) -> Result<(), InferFailure> {
 
 #[cfg(not(feature = "cuda"))]
 fn build_model(source: &VerifiedWeightSource) -> Result<Box<dyn ExecutableModel>, InferFailure> {
+    if source.image.architecture.adapter == LLAMA_ADAPTER_ID {
+        let placement = llama_cpu_placement(source)?;
+        accept_llama_placement(source, &placement)?;
+        return LlamaAdapter.build(source, &placement, &ReferenceF32Backend);
+    }
     let placement = cpu_placement(source)?;
     accept_cpu_placement(source, &placement)?;
     MicroAdapter.build(source, &placement, &ReferenceF32Backend)
@@ -112,6 +123,11 @@ fn build_model(source: &VerifiedWeightSource) -> Result<Box<dyn ExecutableModel>
 #[cfg(feature = "cuda")]
 fn build_model(source: &VerifiedWeightSource) -> Result<Box<dyn ExecutableModel>, InferFailure> {
     require_cuda_slot0()?;
+    if source.image.architecture.adapter == LLAMA_ADAPTER_ID {
+        let placement = llama_cuda_placement(source)?;
+        accept_llama_placement(source, &placement)?;
+        return cpu_adapter_by_id(LLAMA_ADAPTER_ID)?.build(source, &placement, &CandleCudaBackend);
+    }
     let placement = cuda_placement(source)?;
     accept_cuda_placement(source, &placement)?;
     cpu_adapter_by_id(ADAPTER_ID)?.build(source, &placement, &CandleCudaBackend)

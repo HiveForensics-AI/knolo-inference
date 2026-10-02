@@ -66,4 +66,4 @@ The report is created with `create_new`, written, and `fsync`ed.
 
 ## Out of this slice
 
-`knolo-infer run` and `knolo-infer serve` still do not call `measure_residual`. Metal backend has not started. KV scatter has not started. Disaggregated serving has not started. CUDA graphs stay off. The default `knolo-infer` binary stays on `cpu`. A CUDA quantized kernel stays off. Prefix cache stays off. Compiling a `format: gguf` manifest into a `.kmodel` stays `MODEL_IMAGE_INVALID`. The dense Llama-family adapter stays deferred.
+`knolo-infer run` and `knolo-infer serve` still do not call `measure_residual`. The release path continues in KIP-INFER-0141. Metal, KV scatter, and disaggregated serving stay follow-on. CUDA graphs stay off. The default `knolo-infer` binary stays on `cpu`. A CUDA quantized kernel stays off. Prefix cache stays off. Compiling a `format: gguf` manifest into a `.kmodel` stays `MODEL_IMAGE_INVALID` until KIP-INFER-0147. The dense Llama-family adapter is KIP-INFER-0146.

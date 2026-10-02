@@ -1,5 +1,6 @@
-//! `knolo.micro.tokens.v1`: the token list index is the id. Longest match wins.
-//! Equal lengths keep the lower id. Bytes that match no token fail closed.
+//! `knolo.micro.tokens.v1` and `knolo.llama.tokens.v1`: the token list index
+//! is the id. Longest match wins. Equal lengths keep the lower id. Bytes
+//! that match no token fail closed.
 
 use serde::Deserialize;
 
@@ -26,13 +27,15 @@ pub fn parse_tokenizer(bytes: &[u8], vocab: u32) -> Result<MicroTokenizer, Infer
     let file: TokenizerFile = serde_json::from_value(value).map_err(|_| {
         fail(
             ErrorCode::TokenizerInvalid,
-            "tokenizer JSON is not knolo.micro.tokens.v1",
+            "tokenizer JSON is not an allowlisted token list",
         )
     })?;
-    if file.kind != "knolo.micro.tokens.v1" || file.version != 1 {
+    if (file.kind != "knolo.micro.tokens.v1" && file.kind != "knolo.llama.tokens.v1")
+        || file.version != 1
+    {
         return Err(fail(
             ErrorCode::TokenizerInvalid,
-            "tokenizer kind and version must be knolo.micro.tokens.v1",
+            "tokenizer kind and version must be knolo.micro.tokens.v1 or knolo.llama.tokens.v1",
         ));
     }
     if vocab == 0 || file.tokens.len() != vocab as usize {

@@ -13,7 +13,7 @@ use infer_artifact::{
 };
 use infer_contracts::ChatMessageV1;
 use infer_engine::{
-    cpu_placement, load_verified_micro, micro_kv_layout, write_synthetic_model,
+    cpu_placement, load_verified_micro, micro_kv_layout, write_llama_model, write_synthetic_model,
     ArchitectureAdapter, CpuScheduler, MicroAdapter, PagedKv, ReferenceF32Backend, ScheduleRequest,
     SchedulerConfig, ServiceClass, BLOCK_SIZE, CPU_KV_PAGE_POOL, MAX_CONTEXT, VOCAB,
 };
@@ -55,6 +55,7 @@ fn start(dir: &Path, pause: bool) -> Supervisor {
         worker_bin: PathBuf::from(env!("CARGO_BIN_EXE_knolo-infer-worker")),
         home: dir.join("home"),
         pause_before_forward: pause,
+        signing_key: None,
     })
     .unwrap_or_else(|err| panic!("supervisor start: {err}"))
 }
@@ -211,6 +212,7 @@ fn bind_address_must_be_loopback() {
         worker_bin: PathBuf::from("knolo-infer-worker"),
         home: PathBuf::from("home"),
         pause_before_forward: false,
+        signing_key: None,
     });
     match started {
         Ok(supervisor) => {
@@ -247,7 +249,7 @@ fn http_completion_matches_the_scheduler_and_the_worker_does_not_listen() {
     assert_eq!(reply.status, 200, "{}", reply.body);
     assert_eq!(tokens_of(&reply.body), expected);
     assert_eq!(reply.body["output"]["finishReason"], finish);
-    assert_eq!(reply.body["receipt"]["assurance"], "compatibility");
+    assert_eq!(reply.body["receipt"]["assurance"], "same_build_replayable");
     let root = reply.body["receipt"]["receiptRoot"].as_str().unwrap();
     let fetched = exchange(
         supervisor.address(),
@@ -270,7 +272,7 @@ fn http_completion_matches_the_scheduler_and_the_worker_does_not_listen() {
         &infer_contracts::decode_canonical(&stored).unwrap(),
     )
     .unwrap();
-    assert_eq!(receipt.assurance, "compatibility");
+    assert_eq!(receipt.assurance, "same_build_replayable");
     assert_eq!(receipt.execution.scheduling_mode, "continuous");
     #[cfg(not(feature = "cuda"))]
     assert_eq!(receipt.engine.backend_version, "reference-f32");
@@ -661,7 +663,7 @@ fn native_stream_matches_the_scheduler() {
         .unwrap();
     assert_eq!(events.last().unwrap().0, "knolo.receipt");
     let receipt: Value = serde_json::from_str(&receipt.1).unwrap();
-    assert_eq!(receipt["assurance"], "compatibility");
+    assert_eq!(receipt["assurance"], "same_build_replayable");
     assert!(receipt["receiptRoot"]
         .as_str()
         .unwrap()
@@ -1959,6 +1961,7 @@ fn config_for(dir: &Path) -> ServeConfig {
         worker_bin: PathBuf::from(env!("CARGO_BIN_EXE_knolo-infer-worker")),
         home: dir.join("home"),
         pause_before_forward: false,
+        signing_key: None,
     }
 }
 
@@ -2184,7 +2187,7 @@ fn cuda_worker_names_slot0_and_matches_the_oracle() {
     assert_eq!(reply.status, 200, "{}", reply.body);
     assert_eq!(tokens_of(&reply.body), expected);
     assert_eq!(reply.body["output"]["finishReason"], finish);
-    assert_eq!(reply.body["receipt"]["assurance"], "compatibility");
+    assert_eq!(reply.body["receipt"]["assurance"], "same_build_replayable");
     let root = reply.body["receipt"]["receiptRoot"].as_str().unwrap();
     let stored = fs::read(
         dir.join("home")
@@ -2217,7 +2220,7 @@ fn cuda_worker_names_slot0_and_matches_the_oracle() {
         receipt.engine.backend_version,
         infer_native::CANDLE_CPU_VERSION
     );
-    assert_eq!(receipt.assurance, "compatibility");
+    assert_eq!(receipt.assurance, "same_build_replayable");
     assert_eq!(receipt.engine.kernel_bundle_root, bundle.root().unwrap());
     assert_eq!(
         receipt.engine.kernel_plan_root,
@@ -2252,4 +2255,159 @@ fn cuda_worker_names_slot0_and_matches_the_oracle() {
         8.0
     );
     supervisor.shutdown();
+}
+
+#[test]
+fn native_complete_binds_evidence_and_signs_the_receipt() {
+    let dir = scratch();
+    let seed = [7u8; 32];
+    let public = infer_artifact::ed25519_public(&seed);
+    let root = "sha256-0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+    let supervisor = Supervisor::start(ServeConfig {
+        alias: "micro".into(),
+        work_dir: dir.clone(),
+        lock_path: dir.join("knolo.infer.lock.json"),
+        weights_dir: None,
+        bind: "127.0.0.1:0".parse().unwrap(),
+        worker_bin: PathBuf::from(env!("CARGO_BIN_EXE_knolo-infer-worker")),
+        home: dir.join("home"),
+        pause_before_forward: false,
+        signing_key: Some(seed),
+    })
+    .unwrap_or_else(|err| panic!("supervisor start: {err}"));
+    let body = format!(
+        r#"{{"evidence":{{"knowledgeImageRoot":"{root}","queryReceiptIds":["{root}"],"reflexReceiptIds":["{root}"]}},"generation":{{"maxOutputTokens":2}},"messages":[{{"content":"hi","role":"user"}}],"model":"micro"}}"#
+    );
+    let reply = exchange(
+        supervisor.address(),
+        "POST",
+        "/knolo/infer/v1/complete",
+        Some(&body),
+    );
+    assert_eq!(reply.status, 200, "{}", reply.body);
+    assert_eq!(reply.body["receipt"]["assurance"], "same_build_replayable");
+    let receipt_root = reply.body["receipt"]["receiptRoot"].as_str().unwrap();
+    let stored = fs::read(
+        dir.join("home")
+            .join("receipts")
+            .join("sha256")
+            .join(receipt_root.strip_prefix("sha256-").unwrap())
+            .join("receipt.cbor"),
+    )
+    .unwrap();
+    let receipt = infer_contracts::InferenceReceiptV1::from_cbor(
+        &infer_contracts::decode_canonical(&stored).unwrap(),
+    )
+    .unwrap();
+    let knowledge = receipt.knowledge.as_ref().unwrap();
+    assert_eq!(
+        knowledge.knowledge_image_root.as_ref().unwrap().as_str(),
+        root
+    );
+    assert_eq!(knowledge.query_receipt_ids[0].as_str(), root);
+    assert_eq!(knowledge.reflex_receipt_ids[0].as_str(), root);
+    infer_artifact::verify_receipt_signature(
+        receipt.receipt_id.as_str(),
+        &receipt.signatures,
+        &public,
+    )
+    .unwrap();
+    let bad = exchange(
+        supervisor.address(),
+        "POST",
+        "/knolo/infer/v1/complete",
+        Some(
+            r#"{"evidence":{"knowledgeImageRoot":"nope"},"generation":{"maxOutputTokens":2},"messages":[{"content":"hi","role":"user"}],"model":"micro"}"#,
+        ),
+    );
+    assert_eq!(bad.status, 400, "{}", bad.body);
+    assert_eq!(bad.body["error"]["code"], "DIGEST_INVALID");
+    supervisor.shutdown();
+}
+
+fn llama_daily() -> (PathBuf, String) {
+    let n = TEMP.fetch_add(1, Ordering::Relaxed);
+    let dir = std::env::temp_dir().join(format!(
+        "knolo-infer-serve-llama-{}-{n}",
+        std::process::id()
+    ));
+    let _ = fs::remove_dir_all(&dir);
+    fs::create_dir_all(&dir).unwrap();
+    write_llama_model(&dir).unwrap();
+    let bytes = fs::read(dir.join("llama.kmodel")).unwrap();
+    let verification = verify_image(&bytes).unwrap();
+    let artifact = verification.artifact_root.as_str().to_string();
+    let mut lock = new_lockfile(&hash_current_executable().unwrap());
+    pin_alias(&mut lock, "daily", "llama.kmodel", &verification.image).unwrap();
+    write_lockfile(&dir.join("knolo.infer.lock.json"), &lock).unwrap();
+    (dir, artifact)
+}
+
+#[test]
+fn native_complete_serves_the_llama_daily_pin() {
+    let (dir, artifact) = llama_daily();
+    let seed = [9u8; 32];
+    let public = infer_artifact::ed25519_public(&seed);
+    let root = "sha256-0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+    let supervisor = Supervisor::start(ServeConfig {
+        alias: "daily".into(),
+        work_dir: dir.clone(),
+        lock_path: dir.join("knolo.infer.lock.json"),
+        weights_dir: None,
+        bind: "127.0.0.1:0".parse().unwrap(),
+        worker_bin: PathBuf::from(env!("CARGO_BIN_EXE_knolo-infer-worker")),
+        home: dir.join("home"),
+        pause_before_forward: false,
+        signing_key: Some(seed),
+    })
+    .unwrap_or_else(|err| panic!("supervisor start: {err}"));
+    let body = format!(
+        r#"{{"evidence":{{"knowledgeImageRoot":"{root}","queryReceiptIds":["{root}"],"reflexReceiptIds":["{root}"]}},"generation":{{"maxOutputTokens":2}},"messages":[{{"content":"hi","role":"user"}}],"model":"daily"}}"#
+    );
+    let reply = exchange(
+        supervisor.address(),
+        "POST",
+        "/knolo/infer/v1/complete",
+        Some(&body),
+    );
+    assert_eq!(reply.status, 200, "{}", reply.body);
+    assert!(!reply.body["output"]["text"].as_str().unwrap().is_empty());
+    let finish = reply.body["output"]["finishReason"].as_str().unwrap();
+    assert!(finish == "stop" || finish == "length", "{finish}");
+    assert_eq!(reply.body["receipt"]["assurance"], "same_build_replayable");
+    let receipt_root = reply.body["receipt"]["receiptRoot"].as_str().unwrap();
+    let stored = fs::read(
+        dir.join("home")
+            .join("receipts")
+            .join("sha256")
+            .join(receipt_root.strip_prefix("sha256-").unwrap())
+            .join("receipt.cbor"),
+    )
+    .unwrap();
+    let receipt = infer_contracts::InferenceReceiptV1::from_cbor(
+        &infer_contracts::decode_canonical(&stored).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(receipt.model.architecture_adapter_id, "knolo.llama.v1");
+    assert_eq!(receipt.model.artifact_root.as_str(), artifact);
+    assert_eq!(receipt.assurance, "same_build_replayable");
+    #[cfg(not(feature = "cuda"))]
+    assert_eq!(receipt.hardware.device_slot, "cpu");
+    #[cfg(feature = "cuda")]
+    assert_eq!(receipt.hardware.device_slot, "slot-0");
+    let knowledge = receipt.knowledge.as_ref().unwrap();
+    assert_eq!(
+        knowledge.knowledge_image_root.as_ref().unwrap().as_str(),
+        root
+    );
+    assert_eq!(knowledge.query_receipt_ids[0].as_str(), root);
+    assert_eq!(knowledge.reflex_receipt_ids[0].as_str(), root);
+    infer_artifact::verify_receipt_signature(
+        receipt.receipt_id.as_str(),
+        &receipt.signatures,
+        &public,
+    )
+    .unwrap();
+    supervisor.shutdown();
+    let _ = fs::remove_dir_all(&dir);
 }

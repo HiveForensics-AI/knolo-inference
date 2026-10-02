@@ -9,10 +9,10 @@ use std::fs::{self, File};
 use std::io::Read;
 use std::path::{Path, PathBuf};
 
-use infer_artifact::{hash_current_executable, read_lockfile, write_atomic};
+use infer_artifact::{hash_current_executable, read_lockfile, sign_receipt_id, write_atomic};
 use infer_contracts::{
     fail, output_text_root, output_token_root, CborValue, ChatMessageV1, DigestHex,
-    EngineBuildDescriptorV1, EngineReceiptBindingV1, ErrorCode, ExecutionPlanV1,
+    EngineBuildDescriptorV1, EngineReceiptBindingV1, ErrorCode, EvidenceBindingV1, ExecutionPlanV1,
     ExecutionReceiptBindingV1, HardwareReceiptBindingV1, InferFailure, InferenceIntentV1,
     InferenceReceiptV1, KernelBundleDescriptorV1, LimitsV1, ModelReceiptBindingV1,
     OutputReceiptBindingV1, PlacementPlanV1, PlacementReceiptBindingV1, PromptReceiptBindingV1,
@@ -20,16 +20,18 @@ use infer_contracts::{
 };
 #[cfg(not(feature = "cuda"))]
 use infer_engine::{
-    accept_cpu_placement, cpu_kernel_bundle, cpu_kernel_plan_root, cpu_placement, host_engine_build,
+    accept_cpu_placement, cpu_kernel_bundle, cpu_kernel_plan_root, cpu_placement,
+    host_engine_build, llama_cpu_placement,
 };
 #[cfg(feature = "cuda")]
 use infer_engine::{
     accept_cuda_placement, cuda_engine_build, cuda_kernel_bundle, cuda_kernel_plan_root,
-    cuda_placement, require_cuda_slot0,
+    cuda_placement, llama_cuda_placement, require_cuda_slot0,
 };
 use infer_engine::{
-    generate_samples, load_sampler_plan, load_verified_micro, micro_kv_layout, probe_machine,
-    ArchitectureAdapter, Journal, PagedKv, VerifiedWeightSource, CPU_KV_PAGE_POOL, VOCAB,
+    accept_llama_placement, adapter_vocab, generate_samples, load_sampler_plan,
+    load_verified_model, probe_machine, Journal, PagedKv,
+    VerifiedWeightSource, CPU_KV_PAGE_POOL, LLAMA_ADAPTER_ID,
 };
 #[cfg(not(feature = "cuda"))]
 use infer_native::CandleCpuBackend;
@@ -51,6 +53,15 @@ pub struct RunOptions {
     pub temperature_micros: Option<u32>,
     pub seed: Option<u64>,
     pub stream: Option<u64>,
+    pub evidence: Option<EvidenceBindingV1>,
+    pub signing_key: Option<[u8; 32]>,
+}
+
+pub struct PlacementSummary {
+    pub placement_root: DigestHex,
+    pub device_slot: String,
+    pub kv_block_size: u32,
+    pub expected_total_bytes: u64,
 }
 
 pub struct RunOutput {
@@ -71,6 +82,22 @@ pub struct ReplayOptions {
     pub weights_dir: Option<PathBuf>,
 }
 
+pub fn plan_pinned(
+    alias: &str,
+    lock_path: &Path,
+    weights_dir: Option<&Path>,
+) -> Result<PlacementSummary, InferFailure> {
+    let source = open_pinned(alias, lock_path, weights_dir)?;
+    let selected = select_host(&source)?;
+    let _hardware = probe_machine(&selected.bundle.root()?)?;
+    Ok(PlacementSummary {
+        placement_root: selected.placement.root()?,
+        device_slot: selected.device_slot,
+        kv_block_size: selected.placement.kv_block_size,
+        expected_total_bytes: selected.placement.expected_total_bytes,
+    })
+}
+
 pub fn run_pinned(options: &RunOptions) -> Result<RunOutput, InferFailure> {
     check_mode(&options.mode)?;
     let source = open_pinned(
@@ -87,7 +114,7 @@ pub fn run_pinned(options: &RunOptions) -> Result<RunOutput, InferFailure> {
             role: "user".into(),
             content: options.prompt.clone(),
         }],
-        VOCAB as u32,
+        adapter_vocab(&source.image.architecture.adapter)?,
         placement.context_reservation_tokens,
         sampler.settings.max_output_tokens,
     )?;
@@ -101,7 +128,11 @@ pub fn run_pinned(options: &RunOptions) -> Result<RunOutput, InferFailure> {
         prompt_plan_root: compiled.plan.root()?,
         sampler_plan_root: sampler.root()?,
         grammar_plan_root: None,
-        evidence_binding_root: None,
+        evidence_binding_root: options
+            .evidence
+            .as_ref()
+            .map(|binding| binding.root())
+            .transpose()?,
         requested_mode: options.mode.clone(),
         limits_root: limits.root()?,
         extensions: BTreeMap::new(),
@@ -145,7 +176,10 @@ pub fn run_pinned(options: &RunOptions) -> Result<RunOutput, InferFailure> {
             ),
         ));
     }
-    let tokenizer = parse_tokenizer(&source.image.tokenizer.bytes, VOCAB as u32)?;
+    let tokenizer = parse_tokenizer(
+        &source.image.tokenizer.bytes,
+        adapter_vocab(&source.image.architecture.adapter)?,
+    )?;
     let output_text = decode_tokens(&tokenizer, &generated.tokens)?;
     journal.append("prefill", compiled.plan.token_id_root()?)?;
     let mut rolling = Vec::new();
@@ -187,6 +221,7 @@ pub fn run_pinned(options: &RunOptions) -> Result<RunOutput, InferFailure> {
             kv_block_size: placement.kv_block_size,
             kv_precision: placement.kv_precision.clone(),
         },
+        knowledge: options.evidence.clone(),
         prompt: PromptReceiptBindingV1 {
             messages_root: compiled.plan.messages_root.clone(),
             tools_root: compiled.plan.tools_root.clone(),
@@ -196,7 +231,6 @@ pub fn run_pinned(options: &RunOptions) -> Result<RunOutput, InferFailure> {
             prompt_token_count: compiled.plan.token_ids.len() as u32,
             truncation_root: compiled.plan.truncation.root()?,
         },
-        knowledge: None,
         sampler: SamplerReceiptBindingV1 {
             sampler_plan_root: sampler.root()?,
             temperature_micros: sampler.settings.temperature_micros,
@@ -239,6 +273,9 @@ pub fn run_pinned(options: &RunOptions) -> Result<RunOutput, InferFailure> {
         signatures: Vec::new(),
     };
     receipt.receipt_id = receipt.computed_id()?;
+    if let Some(seed) = options.signing_key {
+        receipt.signatures = vec![sign_receipt_id(&seed, receipt.receipt_id.as_str())?];
+    }
     let receipt_bytes = store_receipt(&options.home, &receipt)?;
     Ok(RunOutput {
         output_text,
@@ -267,7 +304,7 @@ pub fn replay_pinned(options: &ReplayOptions) -> Result<ReplayCheckReceiptV1, In
             role: "user".into(),
             content: options.prompt.clone(),
         }],
-        VOCAB as u32,
+        adapter_vocab(&source.image.architecture.adapter)?,
         placement.context_reservation_tokens,
         sampler.settings.max_output_tokens,
     )?;
@@ -335,8 +372,16 @@ fn select_host(source: &VerifiedWeightSource) -> Result<HostSelection, InferFail
     #[cfg(feature = "cuda")]
     {
         let slot = require_cuda_slot0()?;
-        let placement = cuda_placement(source)?;
-        accept_cuda_placement(source, &placement)?;
+        let placement = if source.image.architecture.adapter == LLAMA_ADAPTER_ID {
+            llama_cuda_placement(source)?
+        } else {
+            cuda_placement(source)?
+        };
+        if source.image.architecture.adapter == LLAMA_ADAPTER_ID {
+            accept_llama_placement(source, &placement)?;
+        } else {
+            accept_cuda_placement(source, &placement)?;
+        }
         let bundle = cuda_kernel_bundle(
             CANDLE_CPU_VERSION,
             &slot.toolkit_version,
@@ -351,8 +396,16 @@ fn select_host(source: &VerifiedWeightSource) -> Result<HostSelection, InferFail
     }
     #[cfg(not(feature = "cuda"))]
     {
-        let placement = cpu_placement(source)?;
-        accept_cpu_placement(source, &placement)?;
+        let placement = if source.image.architecture.adapter == LLAMA_ADAPTER_ID {
+            llama_cpu_placement(source)?
+        } else {
+            cpu_placement(source)?
+        };
+        if source.image.architecture.adapter == LLAMA_ADAPTER_ID {
+            accept_llama_placement(source, &placement)?;
+        } else {
+            accept_cpu_placement(source, &placement)?;
+        }
         let bundle = cpu_kernel_bundle(CANDLE_CPU_VERSION)?;
         Ok(HostSelection {
             placement,
@@ -394,7 +447,7 @@ fn forward(
             adapter.build(source, placement, &backend)?
         }
     };
-    let mut kv = PagedKv::new(micro_kv_layout(), CPU_KV_PAGE_POOL)?;
+    let mut kv = PagedKv::new(model.kv_layout(), CPU_KV_PAGE_POOL)?;
     generate_samples(model.as_mut(), &mut kv, 1, prompt, sampler)
 }
 
@@ -420,7 +473,12 @@ fn model_binding(source: &VerifiedWeightSource) -> Result<ModelReceiptBindingV1,
         config_root: source.image.config_root()?,
         tokenizer_root: source.image.tokenizer.root.clone(),
         template_root: source.image.template.root.clone(),
-        storage_precision: "f32".into(),
+        storage_precision: source
+            .image
+            .precisions
+            .first()
+            .cloned()
+            .unwrap_or_else(|| "f32".into()),
         compute_precision: "f32".into(),
     })
 }
@@ -503,7 +561,7 @@ fn open_pinned(
             .unwrap_or_else(|| Path::new("."))
             .to_path_buf(),
     };
-    let source = load_verified_micro(&kmodel, &weights)?;
+    let source = load_verified_model(&kmodel, &weights)?;
     if source.image_root.as_str() != pin.model_image_root
         || source.artifact_root.as_str() != pin.artifact_root
     {
@@ -652,6 +710,8 @@ mod cuda_run {
             temperature_micros: None,
             seed: None,
             stream: None,
+            evidence: None,
+            signing_key: None,
         };
         let output = run_pinned(&options).expect("cuda run");
         let slot = require_cuda_slot0().unwrap();

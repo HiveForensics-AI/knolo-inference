@@ -16,7 +16,10 @@ pub use infer_engine::{
     cpu_kernel_bundle, cpu_kernel_plan_root, default_home, host_engine_build, load_sampler_plan,
     probe_machine, verify_journal, Journal,
 };
-pub use run::{replay_pinned, run_pinned, ReplayOptions, RunOptions, RunOutput};
+pub use run::{
+    plan_pinned, replay_pinned, run_pinned, PlacementSummary, ReplayOptions, RunOptions, RunOutput,
+};
 pub use verify::{
-    request_id_of, verify_receipt_bytes, verify_receipt_journal, verify_receipt_model,
+    request_id_of, verify_receipt_bytes, verify_receipt_evidence, verify_receipt_journal,
+    verify_receipt_key, verify_receipt_model,
 };

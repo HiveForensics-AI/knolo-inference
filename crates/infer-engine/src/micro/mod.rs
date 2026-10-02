@@ -22,6 +22,8 @@ pub use weights::{
     MAX_CONTEXT, MIN_GREEDY_MARGIN, RMS_EPS, ROPE_THETA, SYNTHETIC_SEED, VOCAB,
 };
 
+pub(crate) use math::{add_residual, gemv, rmsnorm, rope, silu, softmax};
+
 use crate::traits::{ArchitectureAdapter, KvLayout, VerifiedWeightSource};
 
 pub use oracle::MicroAdapter;
@@ -53,9 +55,11 @@ pub const FIXTURE_CASES: &[MicroCase] = &[
     },
 ];
 
-pub fn adapter_by_id(id: &str) -> Result<&'static MicroAdapter, InferFailure> {
+pub fn adapter_by_id(id: &str) -> Result<&'static dyn ArchitectureAdapter, InferFailure> {
     if id == ADAPTER_ID {
         Ok(&MICRO_ADAPTER)
+    } else if id == crate::llama::LLAMA_ADAPTER_ID {
+        Ok(crate::llama::llama_adapter())
     } else {
         Err(fail(
             ErrorCode::UnsupportedArchitecture,
@@ -156,8 +160,16 @@ pub fn load_verified_micro(
         }
     })?;
     let verification = verify_image(&bytes)?;
-    let adapter = adapter_by_id(&verification.image.architecture.adapter)?;
-    adapter.validate_config(&verification.image)?;
+    if verification.image.architecture.adapter != ADAPTER_ID {
+        return Err(fail(
+            ErrorCode::UnsupportedArchitecture,
+            format!(
+                "knolo.micro.v1 loader does not open {}",
+                verification.image.architecture.adapter
+            ),
+        ));
+    }
+    MICRO_ADAPTER.validate_config(&verification.image)?;
     let tensors = read_verified_tensors(&verification.image, weights_dir)?;
     let weights = decode_micro_weights(&tensors)?;
     let mut weight_bytes = 0u64;

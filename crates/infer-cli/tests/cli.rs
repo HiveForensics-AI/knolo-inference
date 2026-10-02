@@ -2,7 +2,7 @@ use std::fs;
 use std::process::Command;
 
 use infer_artifact::{encode_safetensors, TensorBytes};
-use infer_engine::write_synthetic_model;
+use infer_engine::{write_llama_model, write_synthetic_model};
 
 fn bin() -> &'static str {
     env!("CARGO_BIN_EXE_knolo-infer")
@@ -133,7 +133,7 @@ fn cli_builds_verifies_pins_and_refuses_pull() {
         .unwrap();
     assert!(!pull.status.success());
     let pull_err = String::from_utf8_lossy(&pull.stderr);
-    assert!(pull_err.contains("unsupported"), "{pull_err}");
+    assert!(pull_err.contains("MODEL_ARTIFACT_MISSING"), "{pull_err}");
 
     let pin = Command::new(bin())
         .current_dir(&dir)
@@ -155,6 +155,22 @@ fn cli_builds_verifies_pins_and_refuses_pull() {
         String::from_utf8_lossy(&pin.stderr)
     );
     assert!(dir.join("knolo.infer.lock.json").is_file());
+
+    let pulled = Command::new(bin())
+        .current_dir(&dir)
+        .args(["pull", "daily", "--json"])
+        .output()
+        .unwrap();
+    assert!(
+        pulled.status.success(),
+        "{}",
+        String::from_utf8_lossy(&pulled.stderr)
+    );
+    let pulled_json: serde_json::Value = serde_json::from_slice(&pulled.stdout).unwrap();
+    assert_eq!(
+        pulled_json["modelImageRoot"],
+        verified_json["modelImageRoot"]
+    );
 
     let mut weights = fs::read(dir.join("weights.safetensors")).unwrap();
     let last = weights.len() - 1;
@@ -343,4 +359,333 @@ fn cli_runs_verifies_and_replays_on_cpu() {
     assert!(!throughput.status.success());
     assert!(String::from_utf8_lossy(&throughput.stderr).contains("BACKEND_NOT_ALLOWED"));
     let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn cli_plans_a_pinned_micro_model() {
+    let dir = std::env::temp_dir().join(format!("knolo-infer-plan-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&dir);
+    fs::create_dir_all(&dir).unwrap();
+    write_synthetic_model(&dir).unwrap();
+    let pin = Command::new(bin())
+        .current_dir(&dir)
+        .args(["pin", "daily", "micro.kmodel"])
+        .output()
+        .unwrap();
+    assert!(
+        pin.status.success(),
+        "{}",
+        String::from_utf8_lossy(&pin.stderr)
+    );
+    let planned = Command::new(bin())
+        .current_dir(&dir)
+        .args(["plan", "daily", "--intent", "interactive", "--json"])
+        .output()
+        .unwrap();
+    assert!(
+        planned.status.success(),
+        "{}",
+        String::from_utf8_lossy(&planned.stderr)
+    );
+    let plan: serde_json::Value = serde_json::from_slice(&planned.stdout).unwrap();
+    assert_eq!(plan["intent"], "interactive");
+    assert_eq!(plan["kvBlockSize"], 16);
+    assert!(plan["placementRoot"]
+        .as_str()
+        .unwrap()
+        .starts_with("sha256-"));
+    let device = plan["device"].as_str().unwrap();
+    assert!(device == "cpu" || device == "slot-0", "{device}");
+    let refused = Command::new(bin())
+        .current_dir(&dir)
+        .args(["plan", "daily", "--intent", "throughput"])
+        .output()
+        .unwrap();
+    assert!(!refused.status.success());
+    assert!(String::from_utf8_lossy(&refused.stderr).contains("BACKEND_NOT_ALLOWED"));
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn cli_binds_evidence_and_checks_the_signature() {
+    let dir = std::env::temp_dir().join(format!("knolo-infer-sign-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&dir);
+    fs::create_dir_all(&dir).unwrap();
+    write_synthetic_model(&dir).unwrap();
+    let pin = Command::new(bin())
+        .current_dir(&dir)
+        .args(["pin", "micro", "micro.kmodel"])
+        .output()
+        .unwrap();
+    assert!(
+        pin.status.success(),
+        "{}",
+        String::from_utf8_lossy(&pin.stderr)
+    );
+    let seed = [7u8; 32];
+    let public = infer_artifact::ed25519_public(&seed);
+    fs::write(dir.join("seed.bin"), seed).unwrap();
+    fs::write(dir.join("public.bin"), public).unwrap();
+    let root = "sha256-0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+    let home = dir.join("home");
+    let ran = Command::new(bin())
+        .current_dir(&dir)
+        .args([
+            "run",
+            "--model",
+            "micro",
+            "--prompt",
+            "hi",
+            "--mode",
+            "pinned",
+            "--receipt",
+            "receipt.cbor",
+            "--home",
+            home.to_str().unwrap(),
+            "--knowledge-image",
+            root,
+            "--query-receipt",
+            root,
+            "--reflex-receipt",
+            root,
+            "--sign-key",
+            "seed.bin",
+            "--json",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        ran.status.success(),
+        "{}",
+        String::from_utf8_lossy(&ran.stderr)
+    );
+    let summary: serde_json::Value = serde_json::from_slice(&ran.stdout).unwrap();
+    assert_eq!(summary["knowledgeImageRoot"], root);
+    assert_eq!(summary["signed"], true);
+    assert_eq!(summary["assurance"], "same_build_replayable");
+    let verified = Command::new(bin())
+        .current_dir(&dir)
+        .args([
+            "receipt",
+            "verify",
+            "receipt.cbor",
+            "--public-key",
+            "public.bin",
+            "--knowledge-image",
+            root,
+            "--query-receipt",
+            root,
+            "--reflex-receipt",
+            root,
+            "--json",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        verified.status.success(),
+        "{}",
+        String::from_utf8_lossy(&verified.stderr)
+    );
+    let checked: serde_json::Value = serde_json::from_slice(&verified.stdout).unwrap();
+    assert_eq!(checked["signatureVerified"], true);
+    let mut bad = fs::read(dir.join("public.bin")).unwrap();
+    bad[0] ^= 0xff;
+    fs::write(dir.join("public.bin"), bad).unwrap();
+    let rejected = Command::new(bin())
+        .current_dir(&dir)
+        .args([
+            "receipt",
+            "verify",
+            "receipt.cbor",
+            "--public-key",
+            "public.bin",
+        ])
+        .output()
+        .unwrap();
+    assert!(!rejected.status.success());
+    assert!(String::from_utf8_lossy(&rejected.stderr).contains("receipt signature"));
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn cli_runs_the_llama_daily_release() {
+    let dir = std::env::temp_dir().join(format!("knolo-infer-daily-{}", std::process::id()));
+    let copy = std::env::temp_dir().join(format!("knolo-infer-daily-copy-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&dir);
+    let _ = fs::remove_dir_all(&copy);
+    fs::create_dir_all(&dir).unwrap();
+    write_llama_model(&dir).unwrap();
+
+    let verified = Command::new(bin())
+        .current_dir(&dir)
+        .args([
+            "model",
+            "verify",
+            "llama.kmodel",
+            "--weights",
+            ".",
+            "--json",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        verified.status.success(),
+        "{}",
+        String::from_utf8_lossy(&verified.stderr)
+    );
+    let verified_json: serde_json::Value = serde_json::from_slice(&verified.stdout).unwrap();
+    assert_eq!(verified_json["adapter"], "knolo.llama.v1");
+    assert_eq!(verified_json["format"], "safetensors");
+    assert_eq!(verified_json["weightsChecked"], true);
+
+    let pin = Command::new(bin())
+        .current_dir(&dir)
+        .args(["pin", "daily", "llama.kmodel", "--weights", ".", "--json"])
+        .output()
+        .unwrap();
+    assert!(
+        pin.status.success(),
+        "{}",
+        String::from_utf8_lossy(&pin.stderr)
+    );
+    let pin_json: serde_json::Value = serde_json::from_slice(&pin.stdout).unwrap();
+    assert_eq!(pin_json["alias"], "daily");
+    assert_eq!(pin_json["modelImageRoot"], verified_json["modelImageRoot"]);
+    assert_eq!(pin_json["artifactRoot"], verified_json["artifactRoot"]);
+
+    let pulled = Command::new(bin())
+        .current_dir(&dir)
+        .args(["pull", "daily", "--json"])
+        .output()
+        .unwrap();
+    assert!(
+        pulled.status.success(),
+        "{}",
+        String::from_utf8_lossy(&pulled.stderr)
+    );
+    let pulled_json: serde_json::Value = serde_json::from_slice(&pulled.stdout).unwrap();
+    assert_eq!(pulled_json["modelImageRoot"], pin_json["modelImageRoot"]);
+    assert_eq!(pulled_json["artifactRoot"], pin_json["artifactRoot"]);
+
+    let planned = Command::new(bin())
+        .current_dir(&dir)
+        .args(["plan", "daily", "--intent", "interactive", "--json"])
+        .output()
+        .unwrap();
+    assert!(
+        planned.status.success(),
+        "{}",
+        String::from_utf8_lossy(&planned.stderr)
+    );
+    let plan: serde_json::Value = serde_json::from_slice(&planned.stdout).unwrap();
+    assert_eq!(plan["intent"], "interactive");
+    assert_eq!(plan["kvBlockSize"], 16);
+    assert!(plan["placementRoot"]
+        .as_str()
+        .unwrap()
+        .starts_with("sha256-"));
+    let device = plan["device"].as_str().unwrap();
+    #[cfg(not(feature = "cuda"))]
+    assert_eq!(device, "cpu");
+    #[cfg(feature = "cuda")]
+    assert_eq!(device, "slot-0");
+    let refused = Command::new(bin())
+        .current_dir(&dir)
+        .args(["plan", "daily", "--intent", "throughput"])
+        .output()
+        .unwrap();
+    assert!(!refused.status.success());
+    assert!(String::from_utf8_lossy(&refused.stderr).contains("BACKEND_NOT_ALLOWED"));
+
+    let seed = [9u8; 32];
+    let public = infer_artifact::ed25519_public(&seed);
+    fs::write(dir.join("seed.bin"), seed).unwrap();
+    fs::write(dir.join("public.bin"), public).unwrap();
+    let root = "sha256-0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+    let home = dir.join("home");
+    let ran = Command::new(bin())
+        .current_dir(&dir)
+        .args([
+            "run",
+            "--model",
+            "daily",
+            "--prompt",
+            "hi",
+            "--mode",
+            "pinned",
+            "--receipt",
+            "receipt.cbor",
+            "--home",
+            home.to_str().unwrap(),
+            "--knowledge-image",
+            root,
+            "--query-receipt",
+            root,
+            "--reflex-receipt",
+            root,
+            "--sign-key",
+            "seed.bin",
+            "--json",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        ran.status.success(),
+        "{}",
+        String::from_utf8_lossy(&ran.stderr)
+    );
+    let summary: serde_json::Value = serde_json::from_slice(&ran.stdout).unwrap();
+    assert_eq!(summary["assurance"], "same_build_replayable");
+    assert_eq!(summary["knowledgeImageRoot"], root);
+    assert_eq!(summary["signed"], true);
+    assert_eq!(summary["deviceSlot"], device);
+    assert!(!summary["outputText"].as_str().unwrap().is_empty());
+    let finish = summary["finishReason"].as_str().unwrap();
+    assert!(finish == "stop" || finish == "length", "{finish}");
+    assert!(!summary["outputTokens"].as_array().unwrap().is_empty());
+
+    fs::create_dir_all(&copy).unwrap();
+    for name in [
+        "llama.kmodel",
+        "weights.safetensors",
+        "knolo.infer.lock.json",
+        "receipt.cbor",
+        "public.bin",
+    ] {
+        fs::copy(dir.join(name), copy.join(name)).unwrap();
+    }
+    let checked = Command::new(bin())
+        .current_dir(&copy)
+        .args([
+            "receipt",
+            "verify",
+            "receipt.cbor",
+            "--model",
+            "daily",
+            "--weights",
+            ".",
+            "--public-key",
+            "public.bin",
+            "--knowledge-image",
+            root,
+            "--query-receipt",
+            root,
+            "--reflex-receipt",
+            root,
+            "--json",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        checked.status.success(),
+        "{}",
+        String::from_utf8_lossy(&checked.stderr)
+    );
+    let checked_json: serde_json::Value = serde_json::from_slice(&checked.stdout).unwrap();
+    assert_eq!(checked_json["verified"], true);
+    assert_eq!(checked_json["signatureVerified"], true);
+    assert_eq!(checked_json["assurance"], "same_build_replayable");
+    assert_eq!(checked_json["artifactRoot"], pin_json["artifactRoot"]);
+    let _ = fs::remove_dir_all(&dir);
+    let _ = fs::remove_dir_all(&copy);
 }

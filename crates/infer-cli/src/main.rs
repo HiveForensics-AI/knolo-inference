@@ -1,7 +1,7 @@
-//! `knolo-infer` compiles model images and runs the micro-model.
+//! `knolo-infer` compiles model images and runs `knolo.micro.v1` and `knolo.llama.v1`.
 //!
-//! Weight download is refused. The `cuda` feature places `run` and the serve
-//! worker on `slot-0`.
+//! `pull` copies a pinned local artifact and checks the digest. The `cuda`
+//! feature places `run` and the serve worker on `slot-0`.
 
 mod run_cmd;
 
@@ -10,11 +10,13 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use infer_artifact::{
-    compile_manifest, hash_current_executable, new_lockfile, pin_alias, portable_model_path,
-    read_lockfile, unsupported_pull, verify_image, verify_weights, write_lockfile,
-    write_model_image, DigestHex, ErrorCode, InferFailure, Verification,
+    compile_manifest, hash_current_executable, load_ed25519_public, load_ed25519_seed,
+    new_lockfile, pin_alias, portable_model_path, pull_alias, read_lockfile, verify_image,
+    verify_image_signatures, verify_weights, write_lockfile, write_model_image, DigestHex,
+    ErrorCode, InferFailure, Verification,
 };
 use infer_receipt::default_home;
+use infer_receipt::plan_pinned;
 use infer_serve::{
     block_termination_signals, wait_for_termination_signal, ServeConfig, Supervisor,
 };
@@ -45,12 +47,15 @@ fn run(args: impl Iterator<Item = String>) -> Result<(), InferFailure> {
         }
         "pin" => {
             reject_execution_flags(&flags)?;
+            reject_release_flags(&flags, false)?;
             pin_command(&flags)
         }
         "pull" => {
             reject_execution_flags(&flags)?;
-            Err(unsupported_pull())
+            reject_release_flags(&flags, false)?;
+            pull_command(&flags)
         }
+        "plan" => plan_command(&flags),
         "run" => run_cmd::run_command(&flags),
         "receipt" => run_cmd::receipt_command(&flags),
         "replay" => run_cmd::replay_command(&flags),
@@ -80,9 +85,14 @@ fn serve_command(flags: &Flags) -> Result<(), InferFailure> {
         || flags.out.is_some()
         || flags.build_root.is_some()
         || flags.json
+        || flags.intent.is_some()
+        || flags.public_key.is_some()
+        || flags.knowledge_image.is_some()
+        || !flags.query_receipts.is_empty()
+        || !flags.reflex_receipts.is_empty()
     {
         return Err(usage(
-            "serve accepts --model, --lock, --weights, --home, --bind, and --worker",
+            "serve accepts --model, --lock, --weights, --home, --bind, --worker, and --sign-key",
         ));
     }
     let alias = flags
@@ -127,6 +137,10 @@ fn serve_command(flags: &Flags) -> Result<(), InferFailure> {
         worker_bin,
         home,
         pause_before_forward: false,
+        signing_key: match &flags.sign_key {
+            Some(path) => Some(load_ed25519_seed(path)?),
+            None => None,
+        },
     })?;
     println!("listening http://{}", supervisor.address());
     wait_for_termination_signal()?;
@@ -163,11 +177,110 @@ fn reject_execution_flags(flags: &Flags) -> Result<(), InferFailure> {
     Ok(())
 }
 
+fn plan_command(flags: &Flags) -> Result<(), InferFailure> {
+    if flags.positionals.len() != 2 {
+        return Err(usage("plan requires an alias"));
+    }
+    if flags.prompt.is_some()
+        || flags.mode.is_some()
+        || flags.receipt.is_some()
+        || flags.home.is_some()
+        || flags.max_tokens.is_some()
+        || flags.temperature_micros.is_some()
+        || flags.seed.is_some()
+        || flags.stream.is_some()
+        || flags.out.is_some()
+        || flags.build_root.is_some()
+        || flags.model.is_some()
+        || flags.sign_key.is_some()
+        || flags.public_key.is_some()
+        || flags.knowledge_image.is_some()
+        || !flags.query_receipts.is_empty()
+        || !flags.reflex_receipts.is_empty()
+    {
+        return Err(usage(
+            "plan accepts --intent, --lock, --weights, and --json",
+        ));
+    }
+    let intent = flags
+        .intent
+        .clone()
+        .unwrap_or_else(|| "interactive".to_string());
+    match intent.as_str() {
+        "interactive" => {}
+        "throughput" => {
+            return Err(InferFailure::new(
+                ErrorCode::BackendNotAllowed,
+                "throughput execution mode is not enabled",
+            ));
+        }
+        _ => return Err(usage("intent must be interactive")),
+    }
+    let alias = &flags.positionals[1];
+    let lock = flags
+        .lock
+        .clone()
+        .unwrap_or_else(|| PathBuf::from("knolo.infer.lock.json"));
+    let summary = plan_pinned(alias, &lock, flags.weights.as_deref())?;
+    if flags.json {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&serde_json::json!({
+                "device": summary.device_slot,
+                "expectedTotalBytes": summary.expected_total_bytes,
+                "intent": intent,
+                "kvBlockSize": summary.kv_block_size,
+                "placementRoot": summary.placement_root.as_str(),
+            }))
+            .expect("plan json")
+        );
+    } else {
+        println!("placement       {}", summary.placement_root);
+        println!("device          {}", summary.device_slot);
+        println!("intent          {intent}");
+    }
+    Ok(())
+}
+
+fn pull_command(flags: &Flags) -> Result<(), InferFailure> {
+    if flags.positionals.len() != 2 {
+        return Err(usage("pull requires an alias"));
+    }
+    if flags.out.is_some() || flags.build_root.is_some() || flags.model.is_some() {
+        return Err(usage("pull accepts --lock, --weights, and --json"));
+    }
+    let alias = &flags.positionals[1];
+    let lock = flags
+        .lock
+        .clone()
+        .unwrap_or_else(|| PathBuf::from("knolo.infer.lock.json"));
+    let report = pull_alias(&lock, alias, flags.weights.as_deref())?;
+    if flags.json {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&serde_json::json!({
+                "alias": alias,
+                "artifactRoot": report.artifact_root.as_str(),
+                "modelImagePath": report.model_image_path,
+                "modelImageRoot": report.image_root.as_str(),
+            }))
+            .expect("pull json")
+        );
+    } else {
+        println!("pulled {alias}");
+        println!("model image   {}", report.image_root);
+        println!("artifact      {}", report.artifact_root);
+        println!("path          {}", report.model_image_path);
+    }
+    Ok(())
+}
+
 fn model_command(flags: &Flags) -> Result<(), InferFailure> {
     let action = flags
         .positionals
         .get(1)
         .ok_or_else(|| usage("model requires build, inspect, or verify"))?;
+    reject_release_flags(flags, action == "verify")?;
     match action.as_str() {
         "build" => {
             let manifest = flags
@@ -229,6 +342,14 @@ fn model_command(flags: &Flags) -> Result<(), InferFailure> {
             if let Some(weights) = &flags.weights {
                 verify_weights(&verification.image, weights)?;
                 verification.weights_checked = true;
+            }
+            if let Some(path) = &flags.public_key {
+                let public = load_ed25519_public(path)?;
+                verify_image_signatures(
+                    &verification.image_root,
+                    &verification.image.signatures,
+                    &public,
+                )?;
             }
             emit(&verification, flags.json);
             Ok(())
@@ -387,6 +508,21 @@ fn reject_unused(flags: &Flags, weights: bool, lock: bool) -> Result<(), InferFa
     Ok(())
 }
 
+fn reject_release_flags(flags: &Flags, allow_public: bool) -> Result<(), InferFailure> {
+    if flags.intent.is_some()
+        || flags.sign_key.is_some()
+        || flags.knowledge_image.is_some()
+        || !flags.query_receipts.is_empty()
+        || !flags.reflex_receipts.is_empty()
+        || (!allow_public && flags.public_key.is_some())
+    {
+        return Err(usage(
+            "that command does not take plan, evidence, or signature flags",
+        ));
+    }
+    Ok(())
+}
+
 fn usage(message: impl Into<String>) -> InferFailure {
     InferFailure::new(ErrorCode::ContractInvalid, message)
 }
@@ -408,6 +544,12 @@ struct Flags {
     stream: Option<u64>,
     bind: Option<String>,
     worker: Option<PathBuf>,
+    intent: Option<String>,
+    knowledge_image: Option<String>,
+    query_receipts: Vec<String>,
+    reflex_receipts: Vec<String>,
+    sign_key: Option<PathBuf>,
+    public_key: Option<PathBuf>,
     help: bool,
     positionals: Vec<String>,
 }
@@ -431,6 +573,12 @@ impl Flags {
             stream: None,
             bind: None,
             worker: None,
+            intent: None,
+            knowledge_image: None,
+            query_receipts: Vec::new(),
+            reflex_receipts: Vec::new(),
+            sign_key: None,
+            public_key: None,
             help: false,
             positionals: Vec::new(),
         };
@@ -463,6 +611,26 @@ impl Flags {
                 "--stream" => flags.stream = Some(parse_u64(&required(&mut args, "--stream")?)?),
                 "--bind" => flags.bind = Some(required(&mut args, "--bind")?),
                 "--worker" => flags.worker = Some(PathBuf::from(required(&mut args, "--worker")?)),
+                "--intent" => flags.intent = Some(required(&mut args, "--intent")?),
+                "--knowledge-image" => {
+                    flags.knowledge_image = Some(required(&mut args, "--knowledge-image")?)
+                }
+                "--query-receipt" => {
+                    flags
+                        .query_receipts
+                        .push(required(&mut args, "--query-receipt")?);
+                }
+                "--reflex-receipt" => {
+                    flags
+                        .reflex_receipts
+                        .push(required(&mut args, "--reflex-receipt")?);
+                }
+                "--sign-key" => {
+                    flags.sign_key = Some(PathBuf::from(required(&mut args, "--sign-key")?))
+                }
+                "--public-key" => {
+                    flags.public_key = Some(PathBuf::from(required(&mut args, "--public-key")?))
+                }
                 other if other.starts_with('-') => {
                     return Err(usage(format!("unknown flag {other}")));
                 }
@@ -503,16 +671,18 @@ Usage:
   knolo-infer model inspect <file.kmodel> [--json]
   knolo-infer model verify <file.kmodel> [--weights <dir>] [--json]
   knolo-infer pin <alias> <file.kmodel> [--lock <knolo.infer.lock.json>] [--weights <dir>] [--build-root <sha256-...>] [--json]
-  knolo-infer pull [<alias>]
-  knolo-infer run --model <alias> --prompt <text> --mode pinned --receipt <file.cbor> [--lock <file>] [--home <dir>] [--max-tokens <n>] [--temperature-micros <n> --seed <n>] [--json]
-  knolo-infer receipt verify <file.cbor> [--home <dir>] [--model <alias> --lock <file> --weights <dir>] [--json]
+  knolo-infer pull <alias> [--lock <file>] [--weights <dir>] [--json]
+  knolo-infer plan <alias> [--intent interactive] [--lock <file>] [--weights <dir>] [--json]
+  knolo-infer run --model <alias> --prompt <text> --mode pinned --receipt <file.cbor> [--lock <file>] [--home <dir>] [--max-tokens <n>] [--temperature-micros <n> --seed <n>] [--knowledge-image <sha256-...>] [--query-receipt <sha256-...>] [--reflex-receipt <sha256-...>] [--sign-key <file>] [--json]
+  knolo-infer receipt verify <file.cbor> [--home <dir>] [--model <alias> --lock <file> --weights <dir>] [--public-key <file>] [--knowledge-image <sha256-...>] [--query-receipt <sha256-...>] [--reflex-receipt <sha256-...>] [--json]
   knolo-infer replay <file.cbor> --model <alias> --prompt <text> [--lock <file>] [--home <dir>] [--out <file>] [--json]
-  knolo-infer serve --model <alias> [--lock <file>] [--weights <dir>] [--home <dir>] [--bind 127.0.0.1:6767] [--worker <knolo-infer-worker>]
+  knolo-infer serve --model <alias> [--lock <file>] [--weights <dir>] [--home <dir>] [--bind 127.0.0.1:6767] [--worker <knolo-infer-worker>] [--sign-key <file>]
 
 model verify without --weights checks the model image and does not open weight files.
-pin records modelImageRoot, artifactRoot, and modelImagePath. It does not download weights.
-pull is refused until download staging exists.
-run executes knolo.micro.v1. Without the cuda feature the device is cpu. With that feature the device is slot-0. throughput mode is refused. The receipt stores roots, not prompt text.
-serve listens on 127.0.0.1 and runs completions through knolo-infer-worker. Without the cuda feature the worker is the reference oracle. With that feature the worker places on slot-0. It journals each request before the forward and does not change run.
+pin records modelImageRoot, artifactRoot, and modelImagePath.
+pull stages the pinned local image and its weight files after the digests match. It does not open a network connection.
+plan prints a placement for the pinned model. It does not allocate pages or run a forward. throughput is refused.
+run executes the pinned adapter. Without the cuda feature the device is cpu. With that feature the device is slot-0. throughput mode is refused. The receipt stores roots, not prompt text. --sign-key adds one ed25519 signature over the receipt id.
+serve listens on 127.0.0.1 and runs completions through knolo-infer-worker. Without the cuda feature the worker is the reference oracle. With that feature the worker places on slot-0. A pinned completion receipt is same_build_replayable. exact_replay_verified stays on replay.
 SIGINT and SIGTERM stop new completions, wait up to 30 seconds for admitted work, and then shut down.
 ";

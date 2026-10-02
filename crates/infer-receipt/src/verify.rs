@@ -3,9 +3,10 @@
 
 use std::path::Path;
 
+use infer_artifact::verify_receipt_signature;
 use infer_contracts::{
-    decode_contract, fail, CborValue, Contract, DigestHex, ErrorCode, InferFailure,
-    InferenceReceiptV1,
+    decode_contract, fail, CborValue, Contract, DigestHex, ErrorCode, EvidenceBindingV1,
+    InferFailure, InferenceReceiptV1,
 };
 use infer_engine::VerifiedWeightSource;
 
@@ -62,6 +63,30 @@ pub fn verify_receipt_model(
         ));
     }
     Ok(())
+}
+
+pub fn verify_receipt_evidence(
+    receipt: &InferenceReceiptV1,
+    expected: &EvidenceBindingV1,
+) -> Result<(), InferFailure> {
+    match &receipt.knowledge {
+        Some(found) if found == expected => Ok(()),
+        Some(_) => Err(fail(
+            ErrorCode::ContractInvalid,
+            "receipt knowledge binding does not match",
+        )),
+        None => Err(fail(
+            ErrorCode::ContractInvalid,
+            "receipt has no knowledge binding",
+        )),
+    }
+}
+
+pub fn verify_receipt_key(
+    receipt: &InferenceReceiptV1,
+    public: &[u8; 32],
+) -> Result<(), InferFailure> {
+    verify_receipt_signature(receipt.receipt_id.as_str(), &receipt.signatures, public)
 }
 
 pub fn request_id_of(receipt: &InferenceReceiptV1) -> Result<String, InferFailure> {

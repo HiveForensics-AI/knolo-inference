@@ -10,8 +10,9 @@ use infer_contracts::{fail, ErrorCode, InferFailure, ModelImageV1, PlacementPlan
 #[cfg(feature = "cuda")]
 use infer_engine::accept_cuda_placement;
 use infer_engine::{
-    accept_cpu_placement, kv_width, micro_kv_layout, MicroAdapter, ADAPTER_ID, HEADS, HEAD_DIM,
-    HIDDEN, INTERMEDIATE, KV_HEADS, RMS_EPS, ROPE_THETA, VOCAB,
+    accept_cpu_placement, accept_llama_placement, kv_width, micro_kv_layout, LlamaAdapter,
+    MicroAdapter, ADAPTER_ID, HEADS, HEAD_DIM, HIDDEN, INTERMEDIATE, KV_HEADS, LLAMA_ADAPTER_ID,
+    RMS_EPS, ROPE_THETA,
 };
 use infer_engine::{
     ArchitectureAdapter, DecodeBatch, DecodeOutput, ExecutableModel, KvLayout, KvStore,
@@ -64,6 +65,7 @@ pub struct CandleMicroModel {
     capabilities: ModelCapabilities,
     layout: KvLayout,
     context_limit: u32,
+    vocab: usize,
     embed: Tensor,
     layers: Vec<LayerTensors>,
     final_norm: Tensor,
@@ -84,6 +86,26 @@ impl CandleMicroModel {
             ));
         }
         let weights = &source.weights;
+        let vocab = weights.embed.len() / HIDDEN;
+        if vocab == 0
+            || weights.embed.len() != vocab * HIDDEN
+            || weights.lm_head.len() != vocab * HIDDEN
+        {
+            return Err(fail(
+                ErrorCode::ModelImageInvalid,
+                "embedding and lm_head do not share a vocabulary",
+            ));
+        }
+        let adapter_id = match source.image.architecture.adapter.as_str() {
+            "knolo.micro.v1" => "knolo.micro.v1",
+            "knolo.llama.v1" => "knolo.llama.v1",
+            other => {
+                return Err(fail(
+                    ErrorCode::UnsupportedArchitecture,
+                    format!("architecture adapter {other} is not compiled in"),
+                ))
+            }
+        };
         let mut layers = Vec::with_capacity(weights.layers.len());
         for layer in &weights.layers {
             layers.push(LayerTensors {
@@ -100,22 +122,23 @@ impl CandleMicroModel {
         }
         Ok(Self {
             identity: ModelRuntimeIdentity {
-                adapter_id: ADAPTER_ID,
+                adapter_id,
                 model_image_root: source.image_root.clone(),
                 artifact_root: source.artifact_root.clone(),
                 runtime_root: source.runtime_root.clone(),
             },
             capabilities: ModelCapabilities {
                 max_context_tokens: context_limit,
-                vocab_size: VOCAB as u32,
+                vocab_size: vocab as u32,
                 text_generation: true,
             },
             layout: micro_kv_layout(),
             context_limit,
-            embed: matrix(&weights.embed, VOCAB, HIDDEN, &device)?,
+            vocab,
+            embed: matrix(&weights.embed, vocab, HIDDEN, &device)?,
             layers,
             final_norm: vector(&weights.final_norm, &device)?,
-            lm_head: matrix(&weights.lm_head, VOCAB, HIDDEN, &device)?,
+            lm_head: matrix(&weights.lm_head, vocab, HIDDEN, &device)?,
             device,
         })
     }
@@ -152,7 +175,7 @@ impl CandleMicroModel {
         kv: &mut dyn KvStore,
         sequence: u64,
     ) -> Result<Vec<f32>, InferFailure> {
-        if token as usize >= VOCAB {
+        if token as usize >= self.vocab {
             return Err(fail(
                 ErrorCode::PromptCompilationFailed,
                 "token id is outside the micro vocabulary",
@@ -382,7 +405,7 @@ impl ExecutableModel for CandleMicroModel {
             ));
         }
         for token in &batch.token_ids {
-            if *token as usize >= VOCAB {
+            if *token as usize >= self.vocab {
                 return Err(fail(
                     ErrorCode::PromptCompilationFailed,
                     "token id is outside the micro vocabulary",
@@ -484,10 +507,71 @@ impl ArchitectureAdapter for CandleMicroAdapter {
 }
 
 static CANDLE_ADAPTER: CandleMicroAdapter = CandleMicroAdapter;
+static CANDLE_LLAMA: CandleLlamaAdapter = CandleLlamaAdapter;
 
-pub fn cpu_adapter_by_id(id: &str) -> Result<&'static CandleMicroAdapter, InferFailure> {
+pub struct CandleLlamaAdapter;
+
+impl ArchitectureAdapter for CandleLlamaAdapter {
+    fn id(&self) -> &'static str {
+        LLAMA_ADAPTER_ID
+    }
+
+    fn validate_config(&self, image: &ModelImageV1) -> Result<(), InferFailure> {
+        LlamaAdapter.validate_config(image)
+    }
+
+    fn expected_tensors(&self, image: &ModelImageV1) -> Result<Vec<TensorSpecV1>, InferFailure> {
+        LlamaAdapter.expected_tensors(image)
+    }
+
+    fn build(
+        &self,
+        source: &VerifiedWeightSource,
+        placement: &PlacementPlanV1,
+        backend: &dyn TensorBackend,
+    ) -> Result<Box<dyn ExecutableModel>, InferFailure> {
+        match (backend.id(), backend.device()) {
+            ("reference-f32", "cpu") => LlamaAdapter.build(source, placement, backend),
+            ("candle-cpu", "cpu") => {
+                accept_llama_placement(source, placement)?;
+                Ok(Box::new(CandleMicroModel::new(
+                    source,
+                    placement.context_reservation_tokens,
+                    Device::Cpu,
+                )?))
+            }
+            #[cfg(feature = "cuda")]
+            ("candle-cuda", "slot-0") => {
+                accept_llama_placement(source, placement)?;
+                let device = Device::new_cuda(0).map_err(|err| {
+                    fail(
+                        ErrorCode::PlacementUnsatisfiable,
+                        format!("cuda device slot-0 is not available: {err}"),
+                    )
+                })?;
+                Ok(Box::new(CandleMicroModel::new(
+                    source,
+                    placement.context_reservation_tokens,
+                    device,
+                )?))
+            }
+            _ => Err(fail(
+                ErrorCode::UnsupportedKernel,
+                if cfg!(feature = "cuda") {
+                    "knolo.llama.v1 candle build accepts reference-f32, candle-cpu, or candle-cuda"
+                } else {
+                    "knolo.llama.v1 candle build accepts reference-f32 or candle-cpu"
+                },
+            )),
+        }
+    }
+}
+
+pub fn cpu_adapter_by_id(id: &str) -> Result<&'static dyn ArchitectureAdapter, InferFailure> {
     if id == ADAPTER_ID {
         Ok(&CANDLE_ADAPTER)
+    } else if id == LLAMA_ADAPTER_ID {
+        Ok(&CANDLE_LLAMA)
     } else {
         Err(fail(
             ErrorCode::UnsupportedArchitecture,

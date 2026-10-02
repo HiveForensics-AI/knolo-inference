@@ -562,6 +562,76 @@ pub fn read_verified_gguf(
     parse_gguf_bytes(&bytes)
 }
 
+/// Knolo precision name for an allowlisted GGUF tensor type.
+pub fn knolo_precision(tensor_type: GgufTensorType) -> &'static str {
+    match tensor_type {
+        GgufTensorType::F32 => "f32",
+        GgufTensorType::F16 => "f16",
+        GgufTensorType::Q8_0 => "q8_0",
+        GgufTensorType::Q4_K => "q4_k_m",
+        GgufTensorType::Q5_K => "q5_k_m",
+        GgufTensorType::Q6_K => "q6_k",
+    }
+}
+
+/// Read GGUF tensor payloads after the file digest matches the model image.
+///
+/// The manifest selects the adapter. `general.architecture` is not consulted.
+/// Payload bytes are copied unchanged. This function does not write a converted file.
+pub fn read_gguf_tensors(
+    image: &infer_contracts::ModelImageV1,
+    weights_dir: &Path,
+) -> Result<Vec<crate::safetensors::TensorBytes>, InferFailure> {
+    if image.format != "gguf" {
+        return Err(image_err("only gguf weight files can be read"));
+    }
+    if image.architecture.adapter != "knolo.llama.v1" {
+        return Err(image_err(
+            "a format gguf manifest compiles for knolo.llama.v1",
+        ));
+    }
+    let mut views = Vec::new();
+    let mut bodies = Vec::new();
+    for file in &image.files {
+        let path = crate::paths::resolve_inside(
+            weights_dir,
+            &file.path,
+            ErrorCode::ModelImageInvalid,
+            ErrorCode::ModelArtifactMissing,
+        )?;
+        let parsed = read_verified_gguf(&path, file.size_bytes, &file.sha256, &file.path)?;
+        for tensor in parsed.tensors {
+            let dtype = knolo_precision(tensor.tensor_type).to_string();
+            let mut shape = Vec::with_capacity(tensor.shape.len());
+            for dim in &tensor.shape {
+                let dim = u32::try_from(*dim)
+                    .map_err(|_| image_err("gguf tensor dimension exceeds u32"))?;
+                shape.push(dim);
+            }
+            views.push(crate::safetensors::TensorView {
+                name: tensor.name.clone(),
+                dtype: dtype.clone(),
+                shape: shape.clone(),
+                start: 0,
+                end: 0,
+                file: file.path.clone(),
+            });
+            bodies.push(crate::safetensors::TensorBytes {
+                name: tensor.name,
+                dtype,
+                shape,
+                bytes: tensor.bytes,
+            });
+        }
+    }
+    crate::safetensors::require_inventory(&image.tensor_inventory, &image.precisions, &views)?;
+    Ok(bodies)
+}
+
+fn image_err(message: impl Into<String>) -> InferFailure {
+    image(message)
+}
+
 /// Write a GGUF container around payloads the caller already quantized.
 ///
 /// The payload bytes are copied. Their tensor type is not changed.

@@ -173,11 +173,21 @@ pub fn load_manifest(path: &Path) -> Result<LoadedAuthoring, InferFailure> {
             "authoring kind and version must be knolo.infer.model-image 1",
         ));
     }
-    if manifest.weights.format != "safetensors" {
-        return Err(fail(
-            ErrorCode::ModelImageInvalid,
-            "this milestone compiles safetensors manifests only",
-        ));
+    match manifest.weights.format.as_str() {
+        "safetensors" => {}
+        "gguf" if manifest.architecture.adapter == "knolo.llama.v1" => {}
+        "gguf" => {
+            return Err(fail(
+                ErrorCode::ModelImageInvalid,
+                "a format gguf manifest compiles for knolo.llama.v1",
+            ))
+        }
+        _ => {
+            return Err(fail(
+                ErrorCode::ModelImageInvalid,
+                "this milestone compiles safetensors manifests only",
+            ))
+        }
     }
     let base = match path.parent() {
         Some(parent) if !parent.as_os_str().is_empty() => parent.to_path_buf(),

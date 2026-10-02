@@ -1,6 +1,6 @@
 # KIP-INFER-0023 — CUDA serve worker
 
-Status: `knolo-infer-worker` built with the `cuda` feature places `knolo.micro.v1` on device `slot-0`. The tensor backend is `candle-cuda`. The serve receipt names that device, and the kernel bundle is the one from KIP-INFER-0022. Greedy token ids match the f32 oracle. The KV pool stays the host page pool from KIP-INFER-0005. Assurance stays `compatibility`. Without the feature, the worker stays the reference oracle in KIP-INFER-0009. There is no quantized GEMM and no CUDA graph.
+Status: `knolo-infer-worker` built with the `cuda` feature places `knolo.micro.v1` on device `slot-0`. The tensor backend is `candle-cuda`. The serve receipt names that device, and the kernel bundle is the one from KIP-INFER-0022. Greedy token ids match the f32 oracle. The KV pool stays the host page pool from KIP-INFER-0005. Assurance is `same_build_replayable`, as specified in KIP-INFER-0145. Without the feature, the worker stays the reference oracle in KIP-INFER-0009. There is no quantized GEMM and no CUDA graph.
 
 ## Selection
 

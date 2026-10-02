@@ -105,7 +105,8 @@ pub use product::{
     MICRO_ADAPTER, MICRO_CONTEXT,
 };
 pub use prompt::{
-    prompt_token_root, ChatMessageV1, EvidenceBindingV1, PromptInputV1, PromptPlanV1, TruncationV1,
+    evidence_from_text, prompt_token_root, ChatMessageV1, EvidenceBindingV1, PromptInputV1,
+    PromptPlanV1, TruncationV1,
 };
 pub use receipt::{
     cancellation_latency_nanos, conversion_config_root, logit_root, output_text_root,

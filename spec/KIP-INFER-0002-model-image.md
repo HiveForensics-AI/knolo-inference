@@ -66,7 +66,7 @@ The writer creates a temporary file in the same directory, `fsync`s it, and rena
 
 ## Pull
 
-`knolo-infer pull` exits non-zero with `MODEL_ARTIFACT_MISSING` and the message that pull is unsupported until download staging exists. It does not open a network connection.
+`knolo-infer pull <alias>` copies the pinned local image and its weight files, as specified in KIP-INFER-0142. A missing source is `MODEL_ARTIFACT_MISSING`. It does not open a network connection. `unsupported_pull` remains the library helper for the old refusal.
 
 ## Fixture
 

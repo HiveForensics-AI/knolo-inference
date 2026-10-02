@@ -16,7 +16,7 @@ use std::time::{Duration, Instant};
 
 use infer_artifact::parse_strict_json;
 use infer_contracts::{fail, ErrorCode, InferFailure};
-use infer_engine::{ServiceClass, ADAPTER_ID, MAX_CONTEXT, VOCAB};
+use infer_engine::{adapter_vocab, ServiceClass, MAX_CONTEXT};
 use infer_prompt::{compile_model_prompt, decode_tokens, parse_tokenizer};
 use serde_json::{json, Map, Value};
 
@@ -53,6 +53,7 @@ pub struct ServeConfig {
     /// When set, the worker admits requests and does not sample until
     /// [`Supervisor::release_forward`]. `knolo-infer serve` leaves this off.
     pub pause_before_forward: bool,
+    pub signing_key: Option<[u8; 32]>,
 }
 
 enum WorkerState {
@@ -90,6 +91,7 @@ struct Plan {
     class: ServiceClass,
     prompt_tokens: u32,
     stream: bool,
+    evidence: Option<infer_contracts::EvidenceBindingV1>,
     trace: crate::trace::RequestTrace,
 }
 
@@ -166,10 +168,10 @@ impl Supervisor {
             &config.alias,
             config.weights_dir.as_deref(),
         )?;
-        if pinned.image.architecture.adapter != ADAPTER_ID {
+        if adapter_vocab(&pinned.image.architecture.adapter).is_err() {
             return Err(fail(
                 ErrorCode::UnsupportedArchitecture,
-                "serve accepts knolo.micro.v1 only",
+                "serve accepts knolo.micro.v1 or knolo.llama.v1",
             ));
         }
         let home = if config.home.is_relative() {
@@ -1067,6 +1069,8 @@ fn open_plan(
             class: crate::protocol::class_name(plan.class),
             openai,
             stream: plan.stream,
+            evidence: plan.evidence.clone(),
+            signing_key: inner.config.signing_key,
         },
     )
 }
@@ -1408,6 +1412,7 @@ fn plan_native_inner(
     reject_unknown(
         object,
         &[
+            "evidence",
             "generation",
             "messages",
             "model",
@@ -1416,6 +1421,10 @@ fn plan_native_inner(
             "stream",
         ],
     )?;
+    let evidence = match object.get("evidence") {
+        None => None,
+        Some(value) => Some(parse_evidence(value)?),
+    };
     let model = expect_string(object, "model")?;
     if model != inner.config.alias {
         return Err(fail(
@@ -1450,11 +1459,14 @@ fn plan_native_inner(
     };
     assemble_plan(
         inner,
-        messages,
-        &generation,
-        class,
-        request_id,
-        stream,
+        PlanDraft {
+            messages,
+            generation: &generation,
+            class,
+            request_id,
+            stream,
+            evidence,
+        },
         traced,
     )
 }
@@ -1502,28 +1514,45 @@ fn plan_openai_inner(
     let request_id = format!("r{:016x}", inner.next_id.fetch_add(1, Ordering::SeqCst));
     assemble_plan(
         inner,
-        messages,
-        &generation,
-        ServiceClass::Standard,
-        request_id,
-        chat.stream,
+        PlanDraft {
+            messages,
+            generation: &generation,
+            class: ServiceClass::Standard,
+            request_id,
+            stream: chat.stream,
+            evidence: None,
+        },
         traced,
     )
 }
 
-fn assemble_plan(
-    inner: &Inner,
+struct PlanDraft<'a> {
     messages: Vec<infer_contracts::ChatMessageV1>,
-    generation: &GenerationRequest,
+    generation: &'a GenerationRequest,
     class: ServiceClass,
     request_id: String,
     stream: bool,
+    evidence: Option<infer_contracts::EvidenceBindingV1>,
+}
+
+fn assemble_plan(
+    inner: &Inner,
+    draft: PlanDraft<'_>,
     traced: &mut bool,
 ) -> Result<Plan, InferFailure> {
     *traced = true;
-    let mut trace = inner.trace.begin(&request_id, class, stream);
-    let sampler = match build_sampler(&inner.pinned.image, generation) {
+    let mut trace = inner
+        .trace
+        .begin(&draft.request_id, draft.class, draft.stream);
+    let sampler = match build_sampler(&inner.pinned.image, draft.generation) {
         Ok(sampler) => sampler,
+        Err(err) => {
+            trace.finish(duration_outcome(err.code), Some(err.code), None);
+            return Err(err);
+        }
+    };
+    let vocab = match adapter_vocab(&inner.pinned.image.architecture.adapter) {
+        Ok(vocab) => vocab,
         Err(err) => {
             trace.finish(duration_outcome(err.code), Some(err.code), None);
             return Err(err);
@@ -1531,8 +1560,8 @@ fn assemble_plan(
     };
     let compiled = match compile_model_prompt(
         &inner.pinned.image,
-        messages,
-        VOCAB as u32,
+        draft.messages,
+        vocab,
         MAX_CONTEXT,
         sampler.settings.max_output_tokens,
     ) {
@@ -1566,15 +1595,69 @@ fn assemble_plan(
     trace.prompt(prompt_root.as_str(), prompt_tokens);
     let prompt = compiled.plan.token_ids.clone();
     Ok(Plan {
-        request_id,
+        request_id: draft.request_id,
         prompt,
         prompt_plan: compiled.plan,
         sampler: Box::new(sampler),
-        class,
+        class: draft.class,
         prompt_tokens,
-        stream,
+        stream: draft.stream,
+        evidence: draft.evidence,
         trace,
     })
+}
+
+fn parse_evidence(value: &Value) -> Result<infer_contracts::EvidenceBindingV1, InferFailure> {
+    let object = expect_object(value)?;
+    reject_unknown(
+        object,
+        &["knowledgeImageRoot", "queryReceiptIds", "reflexReceiptIds"],
+    )?;
+    let knowledge = match object.get("knowledgeImageRoot") {
+        None => None,
+        Some(Value::String(text)) => Some(text.clone()),
+        Some(_) => {
+            return Err(fail(
+                ErrorCode::ContractInvalid,
+                "knowledgeImageRoot must be text",
+            ))
+        }
+    };
+    let queries = digest_list(object, "queryReceiptIds")?;
+    let reflexes = digest_list(object, "reflexReceiptIds")?;
+    infer_contracts::evidence_from_text(knowledge.as_deref(), &queries, &reflexes)?.ok_or_else(
+        || {
+            fail(
+                ErrorCode::ContractInvalid,
+                "evidence names a knowledge image or a receipt",
+            )
+        },
+    )
+}
+
+fn digest_list(object: &Map<String, Value>, key: &str) -> Result<Vec<String>, InferFailure> {
+    match object.get(key) {
+        None => Ok(Vec::new()),
+        Some(Value::Array(items)) => {
+            let mut out = Vec::with_capacity(items.len());
+            for item in items {
+                match item {
+                    Value::String(text) => out.push(text.clone()),
+                    _ => {
+                        return Err(fail(
+                            ErrorCode::ContractInvalid,
+                            format!("field {key} must be digest text"),
+                        ))
+                    }
+                }
+            }
+            Ok(out)
+        }
+        Some(_) => Err(fail(
+            ErrorCode::ContractInvalid,
+            format!("field {key} must be an array"),
+        )),
+    }
 }
 
 fn finish_buffered(
@@ -1705,7 +1788,7 @@ fn native_completion(
     });
     if let Some(receipt) = receipt {
         value["receipt"] = json!({
-            "assurance": "compatibility",
+            "assurance": "same_build_replayable",
             "receiptRoot": receipt,
         });
     }
@@ -1880,7 +1963,7 @@ fn pump_native(
                         stream,
                         "knolo.receipt",
                         &json!({
-                            "assurance": "compatibility",
+                            "assurance": "same_build_replayable",
                             "receiptRoot": published.receipt_id,
                             "requestId": plan.request_id,
                         }),
@@ -2074,7 +2157,10 @@ fn output_len(tokens: &[u32]) -> Result<u32, InferFailure> {
 }
 
 fn decode_output(inner: &Inner, tokens: &[u32]) -> Result<String, InferFailure> {
-    let tokenizer = parse_tokenizer(&inner.pinned.image.tokenizer.bytes, VOCAB as u32)?;
+    let tokenizer = parse_tokenizer(
+        &inner.pinned.image.tokenizer.bytes,
+        adapter_vocab(&inner.pinned.image.architecture.adapter)?,
+    )?;
     decode_tokens(&tokenizer, tokens)
 }
 

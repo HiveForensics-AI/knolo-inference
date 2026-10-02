@@ -2,7 +2,10 @@ use std::fs;
 use std::path::PathBuf;
 
 use infer_contracts::{ChatMessageV1, ErrorCode};
-use infer_engine::{load_verified_micro, write_synthetic_model, VOCAB};
+use infer_engine::{
+    load_verified_micro, load_verified_model, write_llama_model, write_synthetic_model,
+    LLAMA_VOCAB, VOCAB,
+};
 use infer_prompt::{compile_model_prompt, render_chat_template};
 use serde_json::json;
 
@@ -131,4 +134,28 @@ fn micro_prompt_roots_are_stable_and_context_is_closed() {
     let document = format!("{document}\n");
     fs::write(&path, &document).unwrap();
     assert!(document.contains(hi.plan.token_id_root().unwrap().as_str()));
+}
+
+#[test]
+fn llama_tokenizer_encodes_the_micro_greeting() {
+    let micro_dir = std::env::temp_dir().join(format!("knolo-prompt-micro-{}", std::process::id()));
+    let llama_dir = std::env::temp_dir().join(format!("knolo-prompt-llama-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&micro_dir);
+    let _ = fs::remove_dir_all(&llama_dir);
+    fs::create_dir_all(&micro_dir).unwrap();
+    fs::create_dir_all(&llama_dir).unwrap();
+    write_synthetic_model(&micro_dir).unwrap();
+    write_llama_model(&llama_dir).unwrap();
+    let micro = load_verified_micro(&micro_dir.join("micro.kmodel"), &micro_dir).unwrap();
+    let llama = load_verified_model(&llama_dir.join("llama.kmodel"), &llama_dir).unwrap();
+    let messages = vec![ChatMessageV1 {
+        role: "user".into(),
+        content: "hi".into(),
+    }];
+    let micro_plan =
+        compile_model_prompt(&micro.image, messages.clone(), VOCAB as u32, 16, 4).unwrap();
+    let llama_plan =
+        compile_model_prompt(&llama.image, messages, LLAMA_VOCAB as u32, 16, 4).unwrap();
+    assert_eq!(llama_plan.plan.rendered_text, micro_plan.plan.rendered_text);
+    assert_eq!(llama_plan.plan.token_ids, micro_plan.plan.token_ids);
 }

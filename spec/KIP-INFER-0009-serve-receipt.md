@@ -28,7 +28,7 @@ The default worker runs the `reference-f32` oracle. The receipt says so. `tensor
 
 `queueMicros` and `prefillMicros` are 0. `decodeMicros` and `totalMicros` are the supervisor's elapsed time from the accepted write until the worker result. The worker does not report a split clock.
 
-Assurance is `compatibility`. This path does not rerun the sequence, so it does not claim `same_build_replayable`. `exact_replay_verified` remains the result of `knolo-infer replay` on a `knolo-infer run` receipt.
+Assurance is `same_build_replayable`, as specified in KIP-INFER-0145. Serve does not rerun the sequence to label the first response. `exact_replay_verified` remains the result of `knolo-infer replay`. The receipt policy for `/v1/chat/completions` stays `compatibility`.
 
 ## HTTP
 
@@ -37,7 +37,7 @@ Assurance is `compatibility`. This path does not rerun the sequence, so it does 
 A native JSON completion carries:
 
 ```json
-"receipt": {"assurance": "compatibility", "receiptRoot": "sha256-..."}
+"receipt": {"assurance": "same_build_replayable", "receiptRoot": "sha256-..."}
 ```
 
 A native stream keeps `knolo.accepted`, `knolo.delta`, and `knolo.usage`. `knolo.receipt` follows `knolo.usage` for `stop` and `length` and carries `assurance`, `receiptRoot`, and `requestId`. A cancellation still ends at `knolo.usage` and omits `knolo.receipt`.
@@ -54,4 +54,4 @@ Token ids for a given prompt, sampler, and service class still match a run of th
 
 ## Out of this slice
 
-Signing, `exact_replay_verified` for a served request, authentication, and CUDA stay out. Metrics are specified in KIP-INFER-0010. A serve receipt is not a substitute for `knolo-infer replay`.
+`exact_replay_verified` for a served request, authentication, and CUDA stay out of this note. A signature on the serve receipt is KIP-INFER-0144. Metrics are specified in KIP-INFER-0010. A serve receipt is not a substitute for `knolo-infer replay`.

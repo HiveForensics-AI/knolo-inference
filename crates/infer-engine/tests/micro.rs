@@ -261,10 +261,10 @@ fn context_token_and_architecture_failures_are_closed() {
         ErrorCode::ContextLimitExceeded
     );
 
-    assert_eq!(
-        code(adapter_by_id("knolo.llama.v1").unwrap_err()),
-        ErrorCode::UnsupportedArchitecture
-    );
+    match adapter_by_id("knolo.missing.v1") {
+        Ok(_) => panic!("missing adapter was compiled in"),
+        Err(err) => assert_eq!(err.code, ErrorCode::UnsupportedArchitecture),
+    }
     let mut image = source.image.clone();
     image.architecture.family = "llama".into();
     assert_eq!(

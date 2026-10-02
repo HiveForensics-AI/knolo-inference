@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 
 use crate::cbor::CborValue;
-use crate::digest::{digest_value, DigestHex};
+use crate::digest::{digest_bytes, digest_value, DigestHex};
 use crate::error::{fail, ErrorCode, InferFailure};
 use crate::fields::{
     bounded_text, cbor_digest, cbor_text, cbor_u32, expect_kind_version, message_text, one_of,
@@ -13,6 +13,35 @@ use super::common::{put_extensions, string_field_array, Builder};
 pub const PROMPT_INPUT_KIND: &str = "knolo.infer.prompt-input";
 pub const PROMPT_PLAN_KIND: &str = "knolo.infer.prompt-plan";
 pub const EVIDENCE_KIND: &str = "knolo.infer.evidence-binding";
+
+/// Host-supplied Knowledge Image, query, and Reflex ids.
+/// An empty set stays unbound. A bad digest is `DIGEST_INVALID`.
+pub fn evidence_from_text(
+    knowledge: Option<&str>,
+    queries: &[String],
+    reflexes: &[String],
+) -> Result<Option<EvidenceBindingV1>, InferFailure> {
+    if knowledge.is_none() && queries.is_empty() && reflexes.is_empty() {
+        return Ok(None);
+    }
+    let knowledge = match knowledge {
+        Some(value) => Some(DigestHex::parse(value)?),
+        None => None,
+    };
+    let mut query_receipt_ids = Vec::with_capacity(queries.len());
+    for id in queries {
+        query_receipt_ids.push(DigestHex::parse(id)?);
+    }
+    let mut reflex_receipt_ids = Vec::with_capacity(reflexes.len());
+    for id in reflexes {
+        reflex_receipt_ids.push(DigestHex::parse(id)?);
+    }
+    Ok(Some(EvidenceBindingV1::from_supplied(
+        knowledge,
+        query_receipt_ids,
+        reflex_receipt_ids,
+    )?))
+}
 
 /// `H(infer-prompt-tokens, token id array)`.
 pub fn prompt_token_root(token_ids: &[u32]) -> Result<DigestHex, InferFailure> {
@@ -67,6 +96,42 @@ pub struct EvidenceBindingV1 {
 }
 
 impl EvidenceBindingV1 {
+    /// Host-supplied roots. `contextRoot` is the digest of those roots.
+    /// The engine does not open a Knowledge Image.
+    pub fn from_supplied(
+        knowledge_image_root: Option<DigestHex>,
+        query_receipt_ids: Vec<DigestHex>,
+        reflex_receipt_ids: Vec<DigestHex>,
+    ) -> Result<Self, InferFailure> {
+        let mut payload = Vec::new();
+        payload.extend(b"knowledge:");
+        if let Some(root) = &knowledge_image_root {
+            payload.extend(root.as_str().as_bytes());
+        }
+        payload.push(b'\n');
+        for id in &query_receipt_ids {
+            payload.extend(b"query:");
+            payload.extend(id.as_str().as_bytes());
+            payload.push(b'\n');
+        }
+        for id in &reflex_receipt_ids {
+            payload.extend(b"reflex:");
+            payload.extend(id.as_str().as_bytes());
+            payload.push(b'\n');
+        }
+        let binding = Self {
+            context_root: digest_bytes("infer-evidence", &payload)?,
+            extensions: BTreeMap::new(),
+            knowledge_commit_root: None,
+            knowledge_image_root,
+            ordered_evidence_ids: Vec::new(),
+            query_receipt_ids,
+            reflex_receipt_ids,
+        };
+        binding.validate()?;
+        Ok(binding)
+    }
+
     pub fn validate(&self) -> Result<(), InferFailure> {
         if self.query_receipt_ids.len() > 256
             || self.reflex_receipt_ids.len() > 256

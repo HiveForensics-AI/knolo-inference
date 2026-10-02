@@ -50,6 +50,9 @@ pub fn verify_image(bytes: &[u8]) -> Result<Verification, InferFailure> {
 }
 
 pub fn verify_weights(image: &ModelImageV1, weights_dir: &Path) -> Result<(), InferFailure> {
+    if image.format == "gguf" {
+        return crate::gguf::read_gguf_tensors(image, weights_dir).map(|_| ());
+    }
     if image.format != "safetensors" {
         return Err(fail(
             ErrorCode::ModelImageInvalid,

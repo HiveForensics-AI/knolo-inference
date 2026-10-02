@@ -3,15 +3,15 @@
 //! Without the `cuda` feature the worker binary is the reference oracle, so
 //! the engine build says `reference-f32` and the device is `cpu`. With that
 //! feature the engine build says `candle-cuda` and the device is `slot-0`.
-//! Assurance stays `compatibility`: this path does not rerun the sequence.
-//! `knolo-infer run` is still the path that sets `same_build_replayable`.
+//! An isolated pinned completion is `same_build_replayable`. `replay` is still
+//! what sets `exact_replay_verified`. This path does not rerun the sequence.
 
 use std::collections::BTreeMap;
 use std::fs;
 use std::path::Path;
 use std::time::Instant;
 
-use infer_artifact::{hash_regular_file, write_atomic};
+use infer_artifact::{hash_regular_file, sign_receipt_id, write_atomic};
 use infer_contracts::{
     decode_canonical, digest_value, fail, output_text_root, output_token_root, CborValue,
     DigestHex, EngineBuildDescriptorV1, EngineReceiptBindingV1, ErrorCode, ExecutionPlanV1,
@@ -30,14 +30,17 @@ use infer_engine::{
     cuda_engine_build, cuda_kernel_bundle, cuda_kernel_plan_root, cuda_placement_bytes,
     require_cuda_slot0,
 };
-use infer_engine::{probe_machine, Journal, BLOCK_SIZE};
+use infer_engine::{
+    llama_declared_storage, llama_placement_bytes, probe_machine, Journal, BLOCK_SIZE,
+    LLAMA_ADAPTER_ID,
+};
 #[cfg(feature = "cuda")]
 use infer_native::CANDLE_CPU_VERSION;
 
 use crate::model::PinnedModel;
 use crate::worker::PREFILL_CHUNK_TOKENS;
 
-const ASSURANCE: &str = "compatibility";
+const ASSURANCE: &str = "same_build_replayable";
 
 pub(crate) struct ServeIdentity {
     placement_root: DigestHex,
@@ -56,6 +59,8 @@ pub(crate) struct RequestDraft<'a> {
     pub class: &'a str,
     pub openai: bool,
     pub stream: bool,
+    pub evidence: Option<infer_contracts::EvidenceBindingV1>,
+    pub signing_key: Option<[u8; 32]>,
 }
 
 pub(crate) struct Published {
@@ -76,6 +81,8 @@ pub(crate) struct OpenedRequest {
     placement: PlacementReceiptBindingV1,
     prompt: PromptReceiptBindingV1,
     sampler: SamplerReceiptBindingV1,
+    knowledge: Option<infer_contracts::EvidenceBindingV1>,
+    signing_key: Option<[u8; 32]>,
 }
 
 pub(crate) fn prepare_serve(
@@ -85,7 +92,7 @@ pub(crate) fn prepare_serve(
 ) -> Result<ServeIdentity, InferFailure> {
     let runtime = DigestHex::parse(&pinned.runtime_root)?;
     let (placement, bundle, kernel_plan_root, backend_version, device_slot) =
-        serve_target(runtime, pinned.weight_bytes)?;
+        serve_target(pinned, runtime)?;
     if placement.kv_block_size != BLOCK_SIZE {
         return Err(fail(
             ErrorCode::PlacementUnsatisfiable,
@@ -124,10 +131,33 @@ pub(crate) fn prepare_serve(
     })
 }
 
+fn llama_storage(pinned: &PinnedModel) -> Result<&str, InferFailure> {
+    llama_declared_storage(&pinned.image)
+}
+
+fn placement_for(
+    pinned: &PinnedModel,
+    runtime: DigestHex,
+    device: &str,
+) -> Result<PlacementPlanV1, InferFailure> {
+    if pinned.image.architecture.adapter == LLAMA_ADAPTER_ID {
+        let storage = llama_storage(pinned)?;
+        return llama_placement_bytes(runtime, pinned.weight_bytes, device, storage);
+    }
+    #[cfg(not(feature = "cuda"))]
+    {
+        cpu_placement_bytes(runtime, pinned.weight_bytes)
+    }
+    #[cfg(feature = "cuda")]
+    {
+        cuda_placement_bytes(runtime, pinned.weight_bytes)
+    }
+}
+
 #[cfg(not(feature = "cuda"))]
 fn serve_target(
+    pinned: &PinnedModel,
     runtime: DigestHex,
-    weight_bytes: u64,
 ) -> Result<
     (
         PlacementPlanV1,
@@ -138,7 +168,7 @@ fn serve_target(
     ),
     InferFailure,
 > {
-    let placement = cpu_placement_bytes(runtime, weight_bytes)?;
+    let placement = placement_for(pinned, runtime, "cpu")?;
     let bundle = reference_kernel_bundle()?;
     let plan = reference_kernel_plan_root()?;
     Ok((
@@ -152,8 +182,8 @@ fn serve_target(
 
 #[cfg(feature = "cuda")]
 fn serve_target(
+    pinned: &PinnedModel,
     runtime: DigestHex,
-    weight_bytes: u64,
 ) -> Result<
     (
         PlacementPlanV1,
@@ -165,7 +195,7 @@ fn serve_target(
     InferFailure,
 > {
     let slot = require_cuda_slot0()?;
-    let placement = cuda_placement_bytes(runtime, weight_bytes)?;
+    let placement = placement_for(pinned, runtime, "slot-0")?;
     let bundle = cuda_kernel_bundle(
         CANDLE_CPU_VERSION,
         &slot.toolkit_version,
@@ -214,7 +244,11 @@ pub(crate) fn open_request(
         prompt_plan_root: draft.prompt.root()?,
         sampler_plan_root: draft.sampler.root()?,
         grammar_plan_root: None,
-        evidence_binding_root: None,
+        evidence_binding_root: draft
+            .evidence
+            .as_ref()
+            .map(|binding| binding.root())
+            .transpose()?,
         requested_mode: "pinned".into(),
         limits_root: limits.root()?,
         extensions: BTreeMap::new(),
@@ -277,6 +311,8 @@ pub(crate) fn open_request(
             seed: draft.sampler.seed,
             rng: draft.sampler.rng.clone(),
         },
+        knowledge: draft.evidence.clone(),
+        signing_key: draft.signing_key,
         sealed: false,
         started: Instant::now(),
     })
@@ -365,7 +401,7 @@ impl OpenedRequest {
             hardware: self.hardware.clone(),
             placement: self.placement.clone(),
             prompt: self.prompt.clone(),
-            knowledge: None,
+            knowledge: self.knowledge.clone(),
             sampler: self.sampler.clone(),
             execution: ExecutionReceiptBindingV1 {
                 execution_plan_root: self.execution.root()?,
@@ -401,6 +437,9 @@ impl OpenedRequest {
             signatures: Vec::new(),
         };
         receipt.receipt_id = receipt.computed_id()?;
+        if let Some(seed) = self.signing_key {
+            receipt.signatures = vec![sign_receipt_id(&seed, receipt.receipt_id.as_str())?];
+        }
         store_receipt(home, &receipt)?;
         Ok(Published {
             receipt_id: receipt.receipt_id.to_string(),
@@ -493,7 +532,12 @@ fn model_binding(
         config_root: pinned.image.config_root()?,
         tokenizer_root: pinned.image.tokenizer.root.clone(),
         template_root: pinned.image.template.root.clone(),
-        storage_precision: "f32".into(),
+        storage_precision: pinned
+            .image
+            .precisions
+            .first()
+            .cloned()
+            .unwrap_or_else(|| "f32".into()),
         compute_precision: "f32".into(),
     })
 }
