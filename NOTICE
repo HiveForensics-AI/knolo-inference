@@ -1,0 +1,23 @@
+Knolo Infer
+Copyright (c) 2026 Sam Paniagua
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Third-party components used by this repository:
+
+- sha2 (RustCrypto), MIT OR Apache-2.0, SHA-256 digests.
+- serde, MIT OR Apache-2.0, authoring and lockfile structures.
+- serde_json, MIT OR Apache-2.0, JSON encoding for authoring input, safetensors headers, the infer lockfile, and the micro-model conformance document. YAML authoring uses an in-tree subset parser.
+- candle-core 0.8.4, MIT OR Apache-2.0, CPU tensor operations for `infer-native`. The reference oracle does not link it.
+- Philox-4x32-10, in-tree. The constants and known answers match Random123 (D. E. Shaw Research). This repository does not vendor that C code.
+
+Canonical CBOR rules follow KIP-0003 (Knolo Core). This repository
+reimplements that subset. It does not vendor @knolo/core.
+
+The micro tokenizer and the chat-template subset are in-tree. The Hugging Face `tokenizers` crate and minijinja are not linked.
+
+The default build does not link CUDA. The `infer-native` feature `cuda` links candle-core 0.8.4's CUDA backend, which links cudarc 0.13.9 (MIT OR Apache-2.0) and the NVIDIA CUDA toolkit (cuBLAS, nvRTC, and the CUDA runtime). `infer-receipt`, `infer-serve`, and `infer-cli` pass that feature through. It is not enabled by `cargo test --workspace`. The default `knolo-infer-worker` does not link it.

@@ -1,0 +1,17 @@
+[package]
+name = "infer-engine"
+description = "CPU reference engine, micro-transformer oracle, KV pages, and scheduler"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+infer-artifact = { path = "../infer-artifact" }
+infer-contracts = { path = "../infer-contracts" }
+serde_json = "1"
+
+[dev-dependencies]
+infer-artifact = { path = "../infer-artifact" }
+infer-contracts = { path = "../infer-contracts" }

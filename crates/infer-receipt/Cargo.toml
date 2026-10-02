@@ -1,0 +1,19 @@
+[package]
+name = "infer-receipt"
+description = "Journal, CPU engine identity, and receipt verification"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+rust-version.workspace = true
+
+[features]
+cuda = ["infer-native/cuda"]
+
+[dependencies]
+infer-artifact = { path = "../infer-artifact" }
+infer-contracts = { path = "../infer-contracts" }
+infer-engine = { path = "../infer-engine" }
+infer-native = { path = "../infer-native" }
+infer-prompt = { path = "../infer-prompt" }
+serde_json = "1"

@@ -1,0 +1,133 @@
+use std::fs;
+use std::path::PathBuf;
+
+use infer_contracts::{decode_contract, sha256_prefixed};
+use infer_engine::{
+    cpu_placement, load_verified_micro, measure_template_invalid, reference_engine_build,
+    reference_kernel_bundle, verify_template_invalid, write_synthetic_model,
+    write_template_invalid_report, TemplateInvalidObservation,
+};
+
+fn engine_root() -> infer_contracts::DigestHex {
+    let bundle = reference_kernel_bundle().unwrap();
+    let build = reference_engine_build(
+        sha256_prefixed(b"knolo-infer-template-invalid"),
+        bundle.root().unwrap(),
+    )
+    .unwrap();
+    build.root().unwrap()
+}
+
+fn scratch(name: &str) -> PathBuf {
+    let dir = std::env::temp_dir().join(format!(
+        "knolo-infer-template-invalid-{}-{name}",
+        std::process::id()
+    ));
+    let _ = fs::remove_dir_all(&dir);
+    fs::create_dir_all(&dir).unwrap();
+    dir
+}
+
+fn observe(failure: &str) -> TemplateInvalidObservation {
+    TemplateInvalidObservation {
+        engine_build_root: engine_root(),
+        template_root: sha256_prefixed(b"template"),
+        failure: failure.into(),
+        code: "TEMPLATE_INVALID".into(),
+        retryable: false,
+        template_rendered: false,
+        tokenizer_parsed: false,
+        prompt_compiled: false,
+        forward_ran: false,
+        receipt_stored: false,
+        execution_mode: "pinned".into(),
+        cache_policy: "off".into(),
+        concurrency: 1,
+        run_count: 1,
+        warm_state: "cold".into(),
+        request_count: 1,
+    }
+}
+
+#[test]
+fn the_template_report_records_root_encoding_grammar_and_cap() {
+    let dir = scratch("template");
+    write_synthetic_model(&dir).unwrap();
+    let source = load_verified_micro(&dir.join("micro.kmodel"), &dir).unwrap();
+    let plan = cpu_placement(&source).unwrap();
+    for failure in ["root", "encoding", "grammar"] {
+        let measured = measure_template_invalid(&plan, &observe(failure)).unwrap();
+        assert!(!measured.report.template_rendered);
+        assert!(!measured.report.tokenizer_parsed);
+        assert_eq!(measured.report.code, "TEMPLATE_INVALID");
+        verify_template_invalid(&measured).unwrap();
+    }
+    let slot = infer_engine::cuda_placement(&source).unwrap();
+    let cap = measure_template_invalid(&slot, &observe("cap")).unwrap();
+    assert!(!cap.report.prompt_compiled);
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn a_template_record_refuses_a_rendered_prompt_and_a_parsed_tokenizer() {
+    let dir = scratch("refuse");
+    write_synthetic_model(&dir).unwrap();
+    let source = load_verified_micro(&dir.join("micro.kmodel"), &dir).unwrap();
+    let plan = cpu_placement(&source).unwrap();
+
+    let mut rendered = observe("grammar");
+    rendered.template_rendered = true;
+    let err = measure_template_invalid(&plan, &rendered).unwrap_err();
+    assert!(
+        err.message
+            .contains("a template failure does not render the prompt"),
+        "{err}"
+    );
+
+    let mut parsed = observe("encoding");
+    parsed.tokenizer_parsed = true;
+    let err = measure_template_invalid(&plan, &parsed).unwrap_err();
+    assert!(
+        err.message
+            .contains("a template failure does not parse the tokenizer"),
+        "{err}"
+    );
+
+    let mut compiled = observe("cap");
+    compiled.prompt_compiled = true;
+    let err = measure_template_invalid(&plan, &compiled).unwrap_err();
+    assert!(
+        err.message
+            .contains("a template failure does not compile the prompt"),
+        "{err}"
+    );
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn the_template_report_is_written_once_and_a_symlink_is_not_followed() {
+    let dir = scratch("write");
+    write_synthetic_model(&dir).unwrap();
+    let source = load_verified_micro(&dir.join("micro.kmodel"), &dir).unwrap();
+    let plan = cpu_placement(&source).unwrap();
+    let measured = measure_template_invalid(&plan, &observe("grammar")).unwrap();
+    write_template_invalid_report(&dir, &measured, "report.cbor").unwrap();
+    let stored = fs::read(dir.join("report.cbor")).unwrap();
+    assert_eq!(stored, measured.report.to_bytes().unwrap());
+    assert_eq!(
+        decode_contract(&stored).unwrap().kind(),
+        "knolo.infer.template-invalid-report"
+    );
+    let again = write_template_invalid_report(&dir, &measured, "report.cbor").unwrap_err();
+    assert!(again.message.contains("already exists"), "{again}");
+
+    let outside_name = format!("knolo-template-not-created-{}", std::process::id());
+    let outside = std::env::temp_dir().join(&outside_name);
+    let _ = fs::remove_file(&outside);
+    std::os::unix::fs::symlink(std::env::temp_dir(), dir.join("escape")).unwrap();
+    let err = write_template_invalid_report(&dir, &measured, &format!("escape/{outside_name}"))
+        .unwrap_err();
+    assert!(err.message.contains("leaves the directory"), "{err}");
+    assert!(!outside.exists());
+    let _ = fs::remove_dir_all(&dir);
+}

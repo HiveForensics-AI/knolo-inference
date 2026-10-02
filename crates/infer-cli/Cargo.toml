@@ -1,0 +1,28 @@
+[package]
+name = "infer-cli"
+description = "knolo-infer model image commands"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+rust-version.workspace = true
+
+[[bin]]
+name = "knolo-infer"
+path = "src/main.rs"
+
+[features]
+cuda = ["infer-receipt/cuda", "infer-serve/cuda"]
+
+[dependencies]
+infer-artifact = { path = "../infer-artifact" }
+infer-contracts = { path = "../infer-contracts" }
+infer-engine = { path = "../infer-engine" }
+infer-receipt = { path = "../infer-receipt" }
+infer-serve = { path = "../infer-serve" }
+serde_json = "1"
+
+[dev-dependencies]
+infer-artifact = { path = "../infer-artifact" }
+infer-engine = { path = "../infer-engine" }
+serde_json = "1"
