@@ -16,7 +16,7 @@ use std::time::{Duration, Instant};
 
 use infer_artifact::parse_strict_json;
 use infer_contracts::{fail, ErrorCode, InferFailure};
-use infer_engine::{adapter_vocab, ServiceClass, MAX_CONTEXT};
+use infer_engine::{adapter_vocab, prompt_bounds, ServiceClass};
 use infer_prompt::{compile_model_prompt, decode_tokens, parse_tokenizer};
 use serde_json::{json, Map, Value};
 
@@ -1551,8 +1551,8 @@ fn assemble_plan(
             return Err(err);
         }
     };
-    let vocab = match adapter_vocab(&inner.pinned.image.architecture.adapter) {
-        Ok(vocab) => vocab,
+    let (vocab, context) = match prompt_bounds(&inner.pinned.image) {
+        Ok(bounds) => bounds,
         Err(err) => {
             trace.finish(duration_outcome(err.code), Some(err.code), None);
             return Err(err);
@@ -1562,7 +1562,7 @@ fn assemble_plan(
         &inner.pinned.image,
         draft.messages,
         vocab,
-        MAX_CONTEXT,
+        context,
         sampler.settings.max_output_tokens,
     ) {
         Ok(compiled) => compiled,
@@ -2157,10 +2157,8 @@ fn output_len(tokens: &[u32]) -> Result<u32, InferFailure> {
 }
 
 fn decode_output(inner: &Inner, tokens: &[u32]) -> Result<String, InferFailure> {
-    let tokenizer = parse_tokenizer(
-        &inner.pinned.image.tokenizer.bytes,
-        adapter_vocab(&inner.pinned.image.architecture.adapter)?,
-    )?;
+    let (vocab, _) = prompt_bounds(&inner.pinned.image)?;
+    let tokenizer = parse_tokenizer(&inner.pinned.image.tokenizer.bytes, vocab)?;
     decode_tokens(&tokenizer, tokens)
 }
 

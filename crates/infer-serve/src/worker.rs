@@ -27,7 +27,6 @@ use infer_engine::{
 use infer_engine::{
     load_verified_model, CpuScheduler, ExecutableModel, PagedKv, ScheduleOp, ScheduleRequest,
     SchedulerConfig, VerifiedWeightSource, BLOCK_SIZE, CPU_KV_PAGE_POOL, LLAMA_ADAPTER_ID,
-    MAX_CONTEXT,
 };
 #[cfg(feature = "cuda")]
 use infer_native::{cpu_adapter_by_id, CandleCudaBackend};
@@ -81,12 +80,22 @@ fn run_worker(args: impl Iterator<Item = String>) -> Result<(), InferFailure> {
     let verified_bytes = source.weight_bytes;
     let model = build_model(&source)?;
     let model_load_nanos = u64::try_from(started.elapsed().as_nanos()).unwrap_or(u64::MAX);
-    let kv = PagedKv::new(model.kv_layout(), CPU_KV_PAGE_POOL)?;
+    let context = model.capabilities().max_context_tokens;
+    let pages = if context > BLOCK_SIZE {
+        context / BLOCK_SIZE
+    } else {
+        CPU_KV_PAGE_POOL
+    };
+    let kv = if context > BLOCK_SIZE {
+        PagedKv::with_limit(model.kv_layout(), pages, infer_engine::RUN_KV_POOL_BYTES)?
+    } else {
+        PagedKv::new(model.kv_layout(), CPU_KV_PAGE_POOL)?
+    };
     let scheduler = CpuScheduler::new(SchedulerConfig::new(
         source.runtime_root.as_str(),
-        MAX_CONTEXT,
+        context,
         BLOCK_SIZE,
-        CPU_KV_PAGE_POOL,
+        pages,
         PREFILL_CHUNK_TOKENS,
     )?);
     let session = Session {

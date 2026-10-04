@@ -9,7 +9,9 @@ use std::fs::{self, File};
 use std::io::Read;
 use std::path::{Path, PathBuf};
 
-use infer_artifact::{hash_current_executable, read_lockfile, sign_receipt_id, write_atomic};
+use infer_artifact::{
+    hash_current_executable, read_lockfile, resolve_lock_relative, sign_receipt_id, write_atomic,
+};
 use infer_contracts::{
     fail, output_text_root, output_token_root, CborValue, ChatMessageV1, DigestHex,
     EngineBuildDescriptorV1, EngineReceiptBindingV1, ErrorCode, EvidenceBindingV1, ExecutionPlanV1,
@@ -30,8 +32,8 @@ use infer_engine::{
 };
 use infer_engine::{
     accept_llama_placement, adapter_vocab, generate_samples, load_sampler_plan,
-    load_verified_model, probe_machine, Journal, PagedKv,
-    VerifiedWeightSource, CPU_KV_PAGE_POOL, LLAMA_ADAPTER_ID,
+    load_verified_model, open_paged_kv, probe_machine, Journal, VerifiedWeightSource,
+    LLAMA_ADAPTER_ID,
 };
 #[cfg(not(feature = "cuda"))]
 use infer_native::CandleCpuBackend;
@@ -114,7 +116,7 @@ pub fn run_pinned(options: &RunOptions) -> Result<RunOutput, InferFailure> {
             role: "user".into(),
             content: options.prompt.clone(),
         }],
-        adapter_vocab(&source.image.architecture.adapter)?,
+        model_vocab(&source)?,
         placement.context_reservation_tokens,
         sampler.settings.max_output_tokens,
     )?;
@@ -176,10 +178,7 @@ pub fn run_pinned(options: &RunOptions) -> Result<RunOutput, InferFailure> {
             ),
         ));
     }
-    let tokenizer = parse_tokenizer(
-        &source.image.tokenizer.bytes,
-        adapter_vocab(&source.image.architecture.adapter)?,
-    )?;
+    let tokenizer = parse_tokenizer(&source.image.tokenizer.bytes, model_vocab(&source)?)?;
     let output_text = decode_tokens(&tokenizer, &generated.tokens)?;
     journal.append("prefill", compiled.plan.token_id_root()?)?;
     let mut rolling = Vec::new();
@@ -304,7 +303,7 @@ pub fn replay_pinned(options: &ReplayOptions) -> Result<ReplayCheckReceiptV1, In
             role: "user".into(),
             content: options.prompt.clone(),
         }],
-        adapter_vocab(&source.image.architecture.adapter)?,
+        model_vocab(&source)?,
         placement.context_reservation_tokens,
         sampler.settings.max_output_tokens,
     )?;
@@ -428,6 +427,18 @@ fn engine_for(bundle_root: DigestHex) -> Result<EngineBuildDescriptorV1, InferFa
     }
 }
 
+fn model_vocab(source: &VerifiedWeightSource) -> Result<u32, InferFailure> {
+    if let Some(shape) = source.llama {
+        return u32::try_from(shape.vocab).map_err(|_| {
+            fail(
+                ErrorCode::ModelImageInvalid,
+                "llama vocabulary does not fit u32",
+            )
+        });
+    }
+    adapter_vocab(&source.image.architecture.adapter)
+}
+
 fn forward(
     source: &VerifiedWeightSource,
     placement: &PlacementPlanV1,
@@ -447,7 +458,7 @@ fn forward(
             adapter.build(source, placement, &backend)?
         }
     };
-    let mut kv = PagedKv::new(model.kv_layout(), CPU_KV_PAGE_POOL)?;
+    let mut kv = open_paged_kv(source, model.kv_layout())?;
     generate_samples(model.as_mut(), &mut kv, 1, prompt, sampler)
 }
 
@@ -547,13 +558,7 @@ fn open_pinned(
         .models
         .get(alias)
         .ok_or_else(|| fail(ErrorCode::ModelArtifactMissing, "alias is not pinned"))?;
-    let cwd = std::env::current_dir().map_err(|err| {
-        fail(
-            ErrorCode::ModelArtifactMissing,
-            format!("cannot resolve the working directory: {err}"),
-        )
-    })?;
-    let kmodel = cwd.join(&pin.model_image_path);
+    let kmodel = resolve_lock_relative(lock_path, &pin.model_image_path);
     let weights = match weights_dir {
         Some(dir) => dir.to_path_buf(),
         None => kmodel

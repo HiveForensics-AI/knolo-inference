@@ -19,6 +19,8 @@ pub const GGUF_VERSION: u32 = 3;
 pub const GGUF_DEFAULT_ALIGNMENT: u32 = 32;
 pub const GGUF_QUANT_VERSION: u32 = 2;
 pub const MAX_GGUF_BYTES: u64 = 32 * 1024 * 1024;
+pub const RUN_MAX_GGUF_BYTES: u64 = 8 * 1024 * 1024 * 1024;
+pub const RUN_MAX_GGUF_TENSOR_BYTES: u64 = 2 * 1024 * 1024 * 1024;
 const MAX_GGUF_METADATA: usize = 4096;
 const MAX_GGUF_ARRAY: usize = 1_048_576;
 const MAX_GGUF_STRING: usize = 1024 * 1024;
@@ -392,8 +394,25 @@ impl<'a> Cursor<'a> {
 
 /// Parse a buffer the caller has already limited and hashed.
 pub fn parse_gguf_bytes(bytes: &[u8]) -> Result<GgufFile, InferFailure> {
-    if bytes.len() as u64 > MAX_GGUF_BYTES {
-        return Err(image("gguf file exceeds the 32 MiB in-memory read limit"));
+    parse_gguf_bytes_max(bytes, MAX_GGUF_BYTES, false)
+}
+
+/// Parse a Llama run-path buffer. The cold 32 MiB reader is [`parse_gguf_bytes`].
+pub fn parse_gguf_bytes_capped(bytes: &[u8]) -> Result<GgufFile, InferFailure> {
+    parse_gguf_bytes_max(bytes, RUN_MAX_GGUF_BYTES, true)
+}
+
+fn parse_gguf_bytes_max(
+    bytes: &[u8],
+    max_file: u64,
+    run_caps: bool,
+) -> Result<GgufFile, InferFailure> {
+    if bytes.len() as u64 > max_file {
+        return Err(image(if run_caps {
+            "gguf file exceeds the 8 GiB run read limit"
+        } else {
+            "gguf file exceeds the 32 MiB in-memory read limit"
+        }));
     }
     let mut cursor = Cursor { bytes, pos: 0 };
     let magic = cursor.take(4)?;
@@ -452,6 +471,9 @@ pub fn parse_gguf_bytes(bytes: &[u8]) -> Result<GgufFile, InferFailure> {
         let tensor_type = GgufTensorType::from_u32(cursor.u32()?)?;
         let offset = cursor.u64()?;
         let nbytes = tensor_type.nbytes(&shape)?;
+        if run_caps && nbytes > RUN_MAX_GGUF_TENSOR_BYTES {
+            return Err(image("gguf tensor exceeds the 2 GiB run read limit"));
+        }
         infos.push(TensorInfo {
             name,
             tensor_type,
@@ -515,6 +537,25 @@ pub fn read_verified_gguf(
     expected_digest: &DigestHex,
     display: &str,
 ) -> Result<GgufFile, InferFailure> {
+    read_verified_gguf_max(path, expected_size, expected_digest, display, false)
+}
+
+pub fn read_verified_gguf_capped(
+    path: &Path,
+    expected_size: u64,
+    expected_digest: &DigestHex,
+    display: &str,
+) -> Result<GgufFile, InferFailure> {
+    read_verified_gguf_max(path, expected_size, expected_digest, display, true)
+}
+
+fn read_verified_gguf_max(
+    path: &Path,
+    expected_size: u64,
+    expected_digest: &DigestHex,
+    display: &str,
+    run_caps: bool,
+) -> Result<GgufFile, InferFailure> {
     let meta = fs::symlink_metadata(path).map_err(|err| {
         if err.kind() == std::io::ErrorKind::NotFound {
             fail(
@@ -534,8 +575,17 @@ pub fn read_verified_gguf(
             format!("artifact size does not match {display}"),
         ));
     }
-    if expected_size > MAX_GGUF_BYTES {
-        return Err(image("gguf file exceeds the 32 MiB in-memory read limit"));
+    let max_file = if run_caps {
+        RUN_MAX_GGUF_BYTES
+    } else {
+        MAX_GGUF_BYTES
+    };
+    if expected_size > max_file {
+        return Err(image(if run_caps {
+            "gguf file exceeds the 8 GiB run read limit"
+        } else {
+            "gguf file exceeds the 32 MiB in-memory read limit"
+        }));
     }
     let bytes = fs::read(path).map_err(|err| {
         fail(
@@ -559,7 +609,11 @@ pub fn read_verified_gguf(
             format!("artifact digest does not match {display}"),
         ));
     }
-    parse_gguf_bytes(&bytes)
+    if run_caps {
+        parse_gguf_bytes_capped(&bytes)
+    } else {
+        parse_gguf_bytes(&bytes)
+    }
 }
 
 /// Knolo precision name for an allowlisted GGUF tensor type.
@@ -574,14 +628,48 @@ pub fn knolo_precision(tensor_type: GgufTensorType) -> &'static str {
     }
 }
 
+/// GGUF tensors after llama.cpp names are rewritten to Knolo names.
+#[derive(Debug, Clone)]
+pub struct GgufWeightRead {
+    pub tensors: Vec<crate::safetensors::TensorBytes>,
+    pub metadata: Vec<GgufMetadata>,
+}
+
 /// Read GGUF tensor payloads after the file digest matches the model image.
 ///
 /// The manifest selects the adapter. `general.architecture` is not consulted.
 /// Payload bytes are copied unchanged. This function does not write a converted file.
+/// llama.cpp names are rewritten to Knolo names before the inventory check.
+/// Knolo names used by the llama-tiny fixture stay as they are.
 pub fn read_gguf_tensors(
     image: &infer_contracts::ModelImageV1,
     weights_dir: &Path,
 ) -> Result<Vec<crate::safetensors::TensorBytes>, InferFailure> {
+    Ok(read_gguf_weights(image, weights_dir, false)?.tensors)
+}
+
+/// Read a Llama GGUF that may exceed 32 MiB, up to 8 GiB and 2 GiB per tensor.
+pub fn read_gguf_tensors_capped(
+    image: &infer_contracts::ModelImageV1,
+    weights_dir: &Path,
+) -> Result<GgufWeightRead, InferFailure> {
+    read_gguf_weights(image, weights_dir, true)
+}
+
+/// Read a Llama GGUF, using the run cap only when the file is above 32 MiB.
+pub fn read_llama_gguf(
+    image: &infer_contracts::ModelImageV1,
+    weights_dir: &Path,
+) -> Result<GgufWeightRead, InferFailure> {
+    let largest = image.files.iter().map(|file| file.size_bytes).max().unwrap_or(0);
+    read_gguf_weights(image, weights_dir, largest > MAX_GGUF_BYTES)
+}
+
+fn read_gguf_weights(
+    image: &infer_contracts::ModelImageV1,
+    weights_dir: &Path,
+    run_caps: bool,
+) -> Result<GgufWeightRead, InferFailure> {
     if image.format != "gguf" {
         return Err(image_err("only gguf weight files can be read"));
     }
@@ -592,6 +680,7 @@ pub fn read_gguf_tensors(
     }
     let mut views = Vec::new();
     let mut bodies = Vec::new();
+    let mut metadata = Vec::new();
     for file in &image.files {
         let path = crate::paths::resolve_inside(
             weights_dir,
@@ -599,33 +688,142 @@ pub fn read_gguf_tensors(
             ErrorCode::ModelImageInvalid,
             ErrorCode::ModelArtifactMissing,
         )?;
-        let parsed = read_verified_gguf(&path, file.size_bytes, &file.sha256, &file.path)?;
-        for tensor in parsed.tensors {
-            let dtype = knolo_precision(tensor.tensor_type).to_string();
-            let mut shape = Vec::with_capacity(tensor.shape.len());
-            for dim in &tensor.shape {
-                let dim = u32::try_from(*dim)
-                    .map_err(|_| image_err("gguf tensor dimension exceeds u32"))?;
-                shape.push(dim);
-            }
+        let parsed = if run_caps {
+            read_verified_gguf_capped(&path, file.size_bytes, &file.sha256, &file.path)?
+        } else {
+            read_verified_gguf(&path, file.size_bytes, &file.sha256, &file.path)?
+        };
+        metadata.extend(parsed.metadata);
+        let projected = project_llama_tensors(parsed.tensors)?;
+        for tensor in projected {
             views.push(crate::safetensors::TensorView {
                 name: tensor.name.clone(),
-                dtype: dtype.clone(),
-                shape: shape.clone(),
+                dtype: tensor.dtype.clone(),
+                shape: tensor.shape.clone(),
                 start: 0,
                 end: 0,
                 file: file.path.clone(),
             });
-            bodies.push(crate::safetensors::TensorBytes {
-                name: tensor.name,
-                dtype,
-                shape,
-                bytes: tensor.bytes,
-            });
+            bodies.push(tensor);
         }
     }
     crate::safetensors::require_inventory(&image.tensor_inventory, &image.precisions, &views)?;
+    Ok(GgufWeightRead {
+        tensors: bodies,
+        metadata,
+    })
+}
+
+/// `rope_freqs.weight` is a precomputed table. The forward computes RoPE from
+/// the metadata frequency base, so the table is not a weight.
+fn llama_tensor_skipped(name: &str) -> bool {
+    name == "rope_freqs.weight"
+}
+
+/// Rewrite llama.cpp names, drop `rope_freqs.weight`, and reuse the token
+/// embedding when the file has no separate `output.weight`.
+fn project_llama_tensors(
+    tensors: Vec<GgufTensor>,
+) -> Result<Vec<crate::safetensors::TensorBytes>, InferFailure> {
+    let mut bodies = Vec::new();
+    for tensor in tensors {
+        if llama_tensor_skipped(&tensor.name) {
+            continue;
+        }
+        let mut shape = Vec::with_capacity(tensor.shape.len());
+        for dim in &tensor.shape {
+            let dim = u32::try_from(*dim)
+                .map_err(|_| image_err("gguf tensor dimension exceeds u32"))?;
+            shape.push(dim);
+        }
+        let (name, shape) = canonical_llama_tensor(&tensor.name, &shape)?;
+        bodies.push(crate::safetensors::TensorBytes {
+            name,
+            dtype: knolo_precision(tensor.tensor_type).to_string(),
+            shape,
+            bytes: tensor.bytes,
+        });
+    }
+    if !bodies.iter().any(|tensor| tensor.name == "lm_head.weight") {
+        if let Some(embed) = bodies.iter().find(|tensor| tensor.name == "embed.weight") {
+            let mut head = embed.clone();
+            head.name = "lm_head.weight".into();
+            bodies.push(head);
+        }
+    }
     Ok(bodies)
+}
+
+/// Map a llama.cpp tensor name onto a Knolo name and undo the reversed shape.
+/// A name that is already a Knolo weight is returned unchanged.
+pub fn canonical_llama_tensor(name: &str, shape: &[u32]) -> Result<(String, Vec<u32>), InferFailure> {
+    if let Some(mapped) = map_ggml_tensor(name) {
+        let mut shape = shape.to_vec();
+        shape.reverse();
+        return Ok((mapped, shape));
+    }
+    if knolo_weight_name(name) {
+        return Ok((name.to_string(), shape.to_vec()));
+    }
+    Err(image_err(format!("unexpected tensor {name}")))
+}
+
+fn map_ggml_tensor(name: &str) -> Option<String> {
+    match name {
+        "token_embd.weight" => Some("embed.weight".to_string()),
+        "output.weight" => Some("lm_head.weight".to_string()),
+        "output_norm.weight" => Some("final_norm.weight".to_string()),
+        _ => None,
+    }
+    .or_else(|| {
+        let rest = name.strip_prefix("blk.")?;
+        let (index, tail) = rest.split_once('.')?;
+        if index.is_empty() || !index.bytes().all(|byte| byte.is_ascii_digit()) {
+            return None;
+        }
+        let knolo = match tail {
+            "attn_norm.weight" => "attn_norm.weight",
+            "attn_q.weight" => "attn.q.weight",
+            "attn_k.weight" => "attn.k.weight",
+            "attn_v.weight" => "attn.v.weight",
+            "attn_output.weight" => "attn.o.weight",
+            "ffn_norm.weight" => "mlp_norm.weight",
+            "ffn_gate.weight" => "mlp.gate.weight",
+            "ffn_up.weight" => "mlp.up.weight",
+            "ffn_down.weight" => "mlp.down.weight",
+            _ => return None,
+        };
+        Some(format!("layers.{index}.{knolo}"))
+    })
+}
+
+fn knolo_weight_name(name: &str) -> bool {
+    if matches!(
+        name,
+        "embed.weight" | "final_norm.weight" | "lm_head.weight"
+    ) {
+        return true;
+    }
+    let Some(rest) = name.strip_prefix("layers.") else {
+        return false;
+    };
+    let Some((index, tail)) = rest.split_once('.') else {
+        return false;
+    };
+    !index.is_empty()
+        && index.bytes().all(|byte| byte.is_ascii_digit())
+        && matches!(
+            tail,
+            "attn_norm.weight"
+                | "attn.q.weight"
+                | "attn.k.weight"
+                | "attn.v.weight"
+                | "attn.o.weight"
+                | "mlp_norm.weight"
+                | "mlp.gate.weight"
+                | "mlp.up.weight"
+                | "mlp.down.weight"
+        )
 }
 
 fn image_err(message: impl Into<String>) -> InferFailure {
@@ -945,4 +1143,46 @@ fn image(message: impl Into<String>) -> InferFailure {
 
 fn unsupported(message: impl Into<String>) -> InferFailure {
     fail(ErrorCode::UnsupportedQuantization, message)
+}
+
+#[cfg(test)]
+mod llama_project_tests {
+    use super::*;
+
+    fn tensor(name: &str, shape: &[u64], bytes: &[u8]) -> GgufTensor {
+        GgufTensor {
+            name: name.into(),
+            tensor_type: GgufTensorType::F32,
+            shape: shape.to_vec(),
+            offset: 0,
+            bytes: bytes.to_vec(),
+        }
+    }
+
+    #[test]
+    fn rope_freqs_is_dropped_and_a_missing_output_reuses_the_embedding() {
+        let projected = project_llama_tensors(vec![
+            tensor("token_embd.weight", &[4, 2], &[1, 0, 0, 0]),
+            tensor("rope_freqs.weight", &[2], &[9, 0, 0, 0]),
+        ])
+        .unwrap();
+        assert_eq!(projected.len(), 2);
+        assert_eq!(projected[0].name, "embed.weight");
+        assert_eq!(projected[0].shape, vec![2, 4]);
+        assert_eq!(projected[1].name, "lm_head.weight");
+        assert_eq!(projected[1].shape, projected[0].shape);
+        assert_eq!(projected[1].bytes, projected[0].bytes);
+    }
+
+    #[test]
+    fn an_explicit_output_weight_stays_the_lm_head() {
+        let projected = project_llama_tensors(vec![
+            tensor("token_embd.weight", &[4, 2], &[1]),
+            tensor("output.weight", &[4, 2], &[2]),
+        ])
+        .unwrap();
+        assert_eq!(projected.len(), 2);
+        assert_eq!(projected[1].name, "lm_head.weight");
+        assert_eq!(projected[1].bytes, vec![2]);
+    }
 }

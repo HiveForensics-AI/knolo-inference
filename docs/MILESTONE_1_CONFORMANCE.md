@@ -26,3 +26,35 @@ The prior session's compile failures in `infer-receipt` (`?` outside `Result`, m
 - Prefix cache and speculative decoding stay rejected in contract version 1.
 
 Milestone 1's five gates pass. The supervisor and the CUDA kernel are not part of this milestone.
+
+## Current status (2026-10-04)
+
+The 2026-09-22 review above is the record of that day. The limits that have changed since KIP-INFER-0141 through KIP-INFER-0147:
+
+- `knolo-infer pull` of a lockfile alias copies a pinned local image and its weight files after the digests match and does not open a network connection. `pull` of a catalog id streams that row from `huggingface.co`, `cdn-lfs.huggingface.co`, or a host equal to `cdn.hf.co` or ending in `.cdn.hf.co`, hashes the bytes while they download, and leaves the previous pin when the digest does not match.
+- `knolo-infer run` and `knolo-infer serve` sign a receipt when `--sign-key` is set. `receipt verify --public-key` and `model verify --public-key` check that signature with `ed25519-dalek`. The cold signature reports stay shape-only.
+- `knolo.llama.v1` loads the checked-in `models/llama-tiny/` image (vocabulary 32, hidden size 8, two layers, context 16) and a GGUF whose layer count, hidden size, heads, KV heads, head dimension, intermediate size, and vocabulary come from that file. The run reserves at most 2048 tokens. The CPU build runs that image. A CUDA build refuses a non-toy Llama with `UNSUPPORTED_KERNEL` and still places the llama-tiny fixture on `slot-0`.
+- A `knolo.llama.v1` manifest with `format: gguf` compiles for `f32`, `f16`, `q8_0`, `q4_k_m`, `q5_k_m`, and `q6_k`. A micro manifest with that format stays `MODEL_IMAGE_INVALID`.
+- Prefix cache and speculative decoding stay off. `knolo.micro.v1` stays `experimental`. This note still does not issue a blessed conformance receipt.
+
+The table below is the recheck from earlier on 2026-10-04, before the catalog library and the wider Llama loader. It is the record of that run. Rust 1.98.1, Node 22.14.0, CUDA toolkit 12.2.140 at `~/.local/cuda-12.2`:
+
+| Check | Result |
+| --- | --- |
+| `cargo test --workspace --offline` | Pass |
+| `cargo clippy --workspace --all-targets --offline -- -D warnings` | Pass |
+| `npm test`, including the `@knolo/core` CBOR cross-check | Pass |
+| `infer-native`, `infer-receipt`, `infer-cli`, and `infer-serve` with `--features cuda` | Pass |
+| CPU smoke of `models/llama-tiny`: verify, pin `daily`, pull, plan, run, and one served chat completion | Pass. `plan` and `run` placed on `cpu`. The run assurance was `same_build_replayable`. |
+
+The default `knolo-infer` binary does not enable `cuda`. A debug binary last built with `--features cuda` needs `LD_LIBRARY_PATH` to include the toolkit `lib` directory or `run` cannot load `libcublas`.
+
+Rechecked after the catalog library and the wider Llama loader, still on 2026-10-04:
+
+| Check | Result |
+| --- | --- |
+| `cargo test --workspace --offline` | Pass |
+| `cargo clippy --workspace --all-targets --offline -- -D warnings` | Pass |
+| `npm test`, including the `@knolo/core` CBOR cross-check | Pass |
+| `infer-native`, `infer-receipt`, `infer-cli`, and `infer-serve` with `--features cuda` | Pass. `PATH` includes the toolkit `bin` and `nvvm/bin`, which is where `nvcc` finds `cicc`. |
+| Llama 3.2 1B Instruct `Q4_K_M`, one greedy CPU token | Pass. Operator path under `/tmp/knolo-operator`, not CI. `pull` pinned `sha256-559938b99e5096fae39c1a3b26c4c7fd7eb4ebb59b20cdc67e6f764646522a9a`. `run --prompt "Hello" --max-tokens 1` returned token 3923. `receipt verify` passed with `same_build_replayable`. |

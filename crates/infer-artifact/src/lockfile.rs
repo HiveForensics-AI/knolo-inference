@@ -155,7 +155,7 @@ impl Lockfile {
     }
 }
 
-fn valid_alias(alias: &str) -> Result<(), InferFailure> {
+pub(crate) fn valid_alias(alias: &str) -> Result<(), InferFailure> {
     let bytes = alias.as_bytes();
     if !(1..=64).contains(&bytes.len())
         || !bytes[0].is_ascii_alphanumeric()

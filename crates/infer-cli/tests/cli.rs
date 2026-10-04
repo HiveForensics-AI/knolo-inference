@@ -9,6 +9,28 @@ fn bin() -> &'static str {
 }
 
 #[test]
+fn cli_version_prints_the_engine_build() {
+    let output = Command::new(bin()).arg("version").output().unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let text = String::from_utf8_lossy(&output.stdout);
+    assert!(text.contains("knolo-infer 0.1.0\n"), "{text}");
+    assert!(text.contains("engine build   sha256-"), "{text}");
+    assert!(
+        text.contains("backend        candle-cpu") || text.contains("backend        candle-cuda"),
+        "{text}"
+    );
+    let extra = Command::new(bin())
+        .args(["version", "daily"])
+        .output()
+        .unwrap();
+    assert!(!extra.status.success());
+}
+
+#[test]
 fn help_lists_serve_and_serve_requires_a_model() {
     let help = Command::new(bin()).arg("--help").output().unwrap();
     assert!(help.status.success());
@@ -403,6 +425,137 @@ fn cli_plans_a_pinned_micro_model() {
         .unwrap();
     assert!(!refused.status.success());
     assert!(String::from_utf8_lossy(&refused.stderr).contains("BACKEND_NOT_ALLOWED"));
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn cli_lists_the_catalog_and_refuses_an_unsupported_pull() {
+    let catalog = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../catalog/library.json");
+    let before = fs::read(&catalog).unwrap();
+    let help = Command::new(bin()).arg("--help").output().unwrap();
+    let help_text = String::from_utf8_lossy(&help.stdout);
+    assert!(help_text.contains("knolo-infer library"));
+    assert!(help_text.contains("knolo-infer list"));
+    assert!(help_text.contains("knolo-infer rm"));
+    let listed = Command::new(bin())
+        .args(["library", "--json"])
+        .output()
+        .unwrap();
+    assert!(
+        listed.status.success(),
+        "{}",
+        String::from_utf8_lossy(&listed.stderr)
+    );
+    assert_eq!(fs::read(&catalog).unwrap(), before);
+    let body: serde_json::Value = serde_json::from_slice(&listed.stdout).unwrap();
+    let models = body["models"].as_array().unwrap();
+    assert_eq!(models.len(), 5);
+    let qwen = models
+        .iter()
+        .find(|row| row["id"] == "qwen3-4b-instruct")
+        .unwrap();
+    assert_eq!(qwen["status"], "not supported yet");
+    assert_eq!(qwen["gpu"], "not supported yet");
+    let llama = models
+        .iter()
+        .find(|row| row["id"] == "llama-3.2-1b-instruct")
+        .unwrap();
+    assert_eq!(llama["gpu"], "cpu only");
+    let uncensored = Command::new(bin())
+        .args(["library", "--tag", "uncensored", "--json"])
+        .output()
+        .unwrap();
+    assert!(uncensored.status.success());
+    let uncensored: serde_json::Value = serde_json::from_slice(&uncensored.stdout).unwrap();
+    let ids: Vec<_> = uncensored["models"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|row| row["id"].as_str().unwrap())
+        .collect();
+    assert!(ids.contains(&"llama-3.2-1b-uncensored"));
+    assert!(ids.contains(&"qwen3-8b-abliterated"));
+    assert!(!ids.contains(&"llama-3.2-3b-instruct"));
+    let home = std::env::temp_dir().join(format!("knolo-infer-qwen-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&home);
+    let pulled = Command::new(bin())
+        .args([
+            "pull",
+            "qwen3-4b-instruct",
+            "--yes",
+            "--home",
+            home.to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+    assert!(!pulled.status.success());
+    let err = String::from_utf8_lossy(&pulled.stderr);
+    assert!(err.contains("UNSUPPORTED_ARCHITECTURE"), "{err}");
+    assert!(err.contains("is not supported yet"), "{err}");
+    assert!(!home.join("models").exists());
+    let chat = Command::new(bin())
+        .args(["run", "llama-3.2-1b-instruct"])
+        .output()
+        .unwrap();
+    assert!(!chat.status.success());
+    assert!(String::from_utf8_lossy(&chat.stderr).contains("run without --prompt needs a terminal"));
+    let _ = fs::remove_dir_all(&home);
+}
+
+#[test]
+fn cli_catalog_pull_without_yes_refuses_the_license() {
+    let dir = std::env::temp_dir().join(format!("knolo-infer-license-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&dir);
+    fs::create_dir_all(&dir).unwrap();
+    let catalog = serde_json::json!({
+        "kind": "knolo.infer.library",
+        "version": 1,
+        "models": [{
+            "adapter": "knolo.llama.v1",
+            "architecture": "llama",
+            "chatTemplate": infer_artifact::LLAMA_CHAT_TEMPLATE,
+            "contextReservation": 32,
+            "displayName": "Tiny Llama",
+            "filename": "tiny.gguf",
+            "gated": false,
+            "id": "tiny-llama",
+            "licenseId": "synthetic",
+            "licenseUrl": "http://127.0.0.1/license",
+            "minRamBytes": 1,
+            "quant": "f32",
+            "repo": "fixture/tiny",
+            "revision": "rev1",
+            "sha256": "sha256-0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+            "sizeBytes": 4,
+            "status": "runnable",
+            "tags": ["instruct"],
+            "tokenizer": {
+                "filename": "tokenizer.json",
+                "repo": "fixture/tiny",
+                "revision": "rev1",
+                "sha256": "sha256-0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+                "sizeBytes": 4
+            }
+        }]
+    });
+    let catalog_path = dir.join("library.json");
+    fs::write(&catalog_path, serde_json::to_string(&catalog).unwrap()).unwrap();
+    let home = dir.join("home");
+    let pulled = Command::new(bin())
+        .args([
+            "pull",
+            "tiny-llama",
+            "--catalog",
+            catalog_path.to_str().unwrap(),
+            "--home",
+            home.to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+    assert!(!pulled.status.success());
+    let err = String::from_utf8_lossy(&pulled.stderr);
+    assert!(err.contains("license synthetic was not accepted"), "{err}");
+    assert!(!home.join("models").exists());
     let _ = fs::remove_dir_all(&dir);
 }
 

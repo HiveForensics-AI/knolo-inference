@@ -12,7 +12,9 @@ pub const PRECISIONS: &[&str] = &[
     "bf16", "f16", "f32", "i32", "q4_k_m", "q5_k_m", "q6_k", "q8_0", "u8",
 ];
 pub const KV_PRECISIONS: &[&str] = &["bf16", "f16", "f32"];
-pub const MAX_EMBEDDED_BYTES: usize = 16 * 1024 * 1024;
+/// A Llama 3.2 `tokenizer.json` is about 17 MiB. The model image that
+/// embeds it still has to fit in the 32 MiB canonical-document cap.
+pub const MAX_EMBEDDED_BYTES: usize = 24 * 1024 * 1024;
 
 pub struct Builder {
     fields: BTreeMap<String, CborValue>,

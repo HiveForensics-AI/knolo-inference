@@ -11,6 +11,20 @@ const MAX_VALUES: usize = 1_048_576;
 const MAX_STRING: usize = 1024 * 1024;
 
 pub fn parse_strict_json(input: &str, code: ErrorCode) -> Result<Value, InferFailure> {
+    parse_json(input, code, false)
+}
+
+/// Same limits as [`parse_strict_json`], including the float ban, but JSON
+/// null is a value. The Hugging Face tokenizer wrapper is the only caller.
+/// It still rejects null outside the inner `tokenizer` object.
+pub fn parse_strict_json_allowing_null(
+    input: &str,
+    code: ErrorCode,
+) -> Result<Value, InferFailure> {
+    parse_json(input, code, true)
+}
+
+fn parse_json(input: &str, code: ErrorCode, allow_null: bool) -> Result<Value, InferFailure> {
     if input.len() > MAX_BYTES {
         return Err(fail(code, "JSON document exceeds 32 MiB"));
     }
@@ -23,6 +37,7 @@ pub fn parse_strict_json(input: &str, code: ErrorCode) -> Result<Value, InferFai
         depth: 0,
         values: 0,
         code,
+        allow_null,
     };
     parser.skip_ws();
     let value = parser.parse_value()?;
@@ -39,6 +54,7 @@ struct Parser<'a> {
     depth: usize,
     values: usize,
     code: ErrorCode,
+    allow_null: bool,
 }
 
 impl<'a> Parser<'a> {
@@ -80,7 +96,12 @@ impl<'a> Parser<'a> {
         match self.peek() {
             Some(b'n') => {
                 self.consume(b"null")?;
-                Err(self.err("JSON null is not allowed"))
+                if self.allow_null {
+                    self.reject_ident_tail()?;
+                    Ok(Value::Null)
+                } else {
+                    Err(self.err("JSON null is not allowed"))
+                }
             }
             Some(b't') => {
                 self.consume(b"true")?;
@@ -334,5 +355,9 @@ mod tests {
         assert!(parse_strict_json(r#"{"a":null}"#, code).is_err());
         let value = parse_strict_json(r#"{"z":1,"a":{"b":"\u0041"}}"#, code).unwrap();
         assert_eq!(value["a"]["b"], "A");
+        let with_null = parse_strict_json_allowing_null(r#"{"a":null,"b":1}"#, code).unwrap();
+        assert!(with_null["a"].is_null());
+        assert!(parse_strict_json_allowing_null(r#"{"a":1.5}"#, code).is_err());
+        assert!(parse_strict_json_allowing_null(r#"{"a":null,"a":1}"#, code).is_err());
     }
 }

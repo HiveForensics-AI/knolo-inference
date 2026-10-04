@@ -16,7 +16,7 @@ jobs:
         with:
           node-version: 22
           cache: npm
-      - run: cargo test
-      - run: cargo clippy --all-targets -- -D warnings
+      - run: cargo test --locked
+      - run: cargo clippy --all-targets --locked -- -D warnings
       - run: npm ci
       - run: npm test

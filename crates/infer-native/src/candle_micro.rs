@@ -534,6 +534,12 @@ impl ArchitectureAdapter for CandleLlamaAdapter {
             ("reference-f32", "cpu") => LlamaAdapter.build(source, placement, backend),
             ("candle-cpu", "cpu") => {
                 accept_llama_placement(source, placement)?;
+                if source.llama.is_some_and(|shape| !shape.is_toy()) {
+                    return Ok(Box::new(infer_engine::LlamaOracle::wide(
+                        source,
+                        placement.context_reservation_tokens,
+                    )?));
+                }
                 Ok(Box::new(CandleMicroModel::new(
                     source,
                     placement.context_reservation_tokens,
@@ -542,6 +548,12 @@ impl ArchitectureAdapter for CandleLlamaAdapter {
             }
             #[cfg(feature = "cuda")]
             ("candle-cuda", "slot-0") => {
+                if source.llama.is_some_and(|shape| !shape.is_toy()) {
+                    return Err(fail(
+                        ErrorCode::UnsupportedKernel,
+                        "knolo.llama.v1 above the llama-tiny fixture has no CUDA kernel",
+                    ));
+                }
                 accept_llama_placement(source, placement)?;
                 let device = Device::new_cuda(0).map_err(|err| {
                     fail(

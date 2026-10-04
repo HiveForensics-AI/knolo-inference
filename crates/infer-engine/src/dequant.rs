@@ -12,10 +12,21 @@ use infer_contracts::{fail, ErrorCode, InferFailure};
 
 pub const MAX_DEQUANT_BYTES: u64 = 32 * 1024 * 1024;
 
+/// Largest f32 expansion accepted on the Llama run path.
+pub const RUN_MAX_DEQUANT_BYTES: u64 = 2 * 1024 * 1024 * 1024;
+
 /// Byte length of the `f32` buffer `dequant_gguf` will allocate.
 pub fn dequant_output_bytes(
     tensor_type: GgufTensorType,
     payload_len: u64,
+) -> Result<u64, InferFailure> {
+    dequant_output_bytes_limited(tensor_type, payload_len, MAX_DEQUANT_BYTES)
+}
+
+pub fn dequant_output_bytes_limited(
+    tensor_type: GgufTensorType,
+    payload_len: u64,
+    max_bytes: u64,
 ) -> Result<u64, InferFailure> {
     let type_size = tensor_type.type_size();
     if payload_len == 0 || payload_len % type_size != 0 {
@@ -39,10 +50,16 @@ pub fn dequant_output_bytes(
             "gguf tensor byte length overflows",
         )
     })?;
-    if bytes > MAX_DEQUANT_BYTES {
+    if bytes > max_bytes {
+        if max_bytes <= MAX_DEQUANT_BYTES {
+            return Err(fail(
+                ErrorCode::InsufficientMemory,
+                "dequant output exceeds 32 MiB",
+            ));
+        }
         return Err(fail(
             ErrorCode::InsufficientMemory,
-            "dequant output exceeds 32 MiB",
+            "dequant output exceeds 2 GiB",
         ));
     }
     Ok(bytes)
@@ -50,7 +67,16 @@ pub fn dequant_output_bytes(
 
 /// Expand one tensor payload to finite `f32` values.
 pub fn dequant_gguf(tensor_type: GgufTensorType, bytes: &[u8]) -> Result<Vec<f32>, InferFailure> {
-    let out_bytes = dequant_output_bytes(tensor_type, bytes.len() as u64)?;
+    dequant_gguf_limited(tensor_type, bytes, MAX_DEQUANT_BYTES)
+}
+
+/// Expand one tensor with a caller-supplied output cap.
+pub fn dequant_gguf_limited(
+    tensor_type: GgufTensorType,
+    bytes: &[u8],
+    max_bytes: u64,
+) -> Result<Vec<f32>, InferFailure> {
+    let out_bytes = dequant_output_bytes_limited(tensor_type, bytes.len() as u64, max_bytes)?;
     let count = usize::try_from(out_bytes / 4).unwrap_or(0);
     let mut out = Vec::with_capacity(count);
     let width = tensor_type.type_size() as usize;

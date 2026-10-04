@@ -44,7 +44,21 @@ pub struct PagedKv {
 impl PagedKv {
     pub fn new(layout: KvLayout, page_count: u32) -> Result<Self, InferFailure> {
         let pool = crate::memory::planned_kv_pool(&layout, page_count)?;
-        let slots = usize::try_from(pool.slots)
+        Self::allocate(layout, page_count, pool.slots)
+    }
+
+    /// Allocate a pool above the 64 MiB cold cap. `PagedKv::new` is unchanged.
+    pub fn with_limit(
+        layout: KvLayout,
+        page_count: u32,
+        max_bytes: u64,
+    ) -> Result<Self, InferFailure> {
+        let pool = crate::memory::planned_kv_pool_within(&layout, page_count, max_bytes)?;
+        Self::allocate(layout, page_count, pool.slots)
+    }
+
+    fn allocate(layout: KvLayout, page_count: u32, slots: u64) -> Result<Self, InferFailure> {
+        let slots = usize::try_from(slots)
             .map_err(|_| fail(ErrorCode::ContractInvalid, "kv page size overflows"))?;
         let pages = (0..page_count)
             .map(|_| Page {

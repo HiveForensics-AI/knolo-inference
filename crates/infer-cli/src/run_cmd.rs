@@ -3,9 +3,12 @@
 //! The default build places the model on `cpu`. The `cuda` feature places it
 //! on `slot-0`.
 
+use std::io::{self, IsTerminal, Write};
 use std::path::{Path, PathBuf};
 
-use infer_artifact::{load_ed25519_public, load_ed25519_seed, read_lockfile, write_atomic};
+use infer_artifact::{
+    load_ed25519_public, load_ed25519_seed, read_lockfile, resolve_lock_relative, write_atomic,
+};
 use infer_contracts::{evidence_from_text, fail, ErrorCode, InferFailure};
 use infer_engine::load_verified_model;
 use infer_receipt::{
@@ -16,14 +19,27 @@ use infer_receipt::{
 use crate::Flags;
 
 pub fn run_command(flags: &Flags) -> Result<(), InferFailure> {
-    if flags.positionals.len() != 1 {
-        return Err(usage("run takes flags, not extra arguments"));
+    if flags.positionals.len() > 2 {
+        return Err(usage("run takes one model name or only flags"));
+    }
+    let named = flags.positionals.get(1).map(String::as_str);
+    if named.is_some() && flags.model.is_some() {
+        return Err(usage("run takes a model name or --model, not both"));
+    }
+    if flags.yes || flags.catalog.is_some() || !flags.tags.is_empty() {
+        return Err(usage("run does not take library flags"));
     }
     reject_unused_run(flags)?;
-    let alias = flags
-        .model
-        .clone()
-        .ok_or_else(|| usage("run requires --model"))?;
+    if let Some(name) = named {
+        if flags.prompt.is_none() {
+            return chat_loop(flags, name);
+        }
+    }
+    let alias = match (&flags.model, named) {
+        (Some(model), None) => model.clone(),
+        (None, Some(name)) => name.to_string(),
+        _ => return Err(usage("run requires --model")),
+    };
     let prompt = flags
         .prompt
         .clone()
@@ -37,10 +53,11 @@ pub fn run_command(flags: &Flags) -> Result<(), InferFailure> {
         .clone()
         .ok_or_else(|| usage("run requires --receipt"))?;
     let home = home_dir(flags)?;
-    let lock = flags
-        .lock
-        .clone()
-        .unwrap_or_else(|| PathBuf::from("knolo.infer.lock.json"));
+    let lock = match (&flags.lock, named) {
+        (Some(lock), _) => lock.clone(),
+        (None, Some(_)) => home.join("knolo.infer.lock.json"),
+        (None, None) => PathBuf::from("knolo.infer.lock.json"),
+    };
     let evidence = evidence_from_text(
         flags.knowledge_image.as_deref(),
         &flags.query_receipts,
@@ -230,6 +247,93 @@ pub fn replay_command(flags: &Flags) -> Result<(), InferFailure> {
     Ok(())
 }
 
+fn chat_loop(flags: &Flags, alias: &str) -> Result<(), InferFailure> {
+    if !io::stdin().is_terminal() {
+        return Err(usage("run without --prompt needs a terminal"));
+    }
+    if flags.mode.is_some() || flags.receipt.is_some() || flags.stream.is_some() {
+        return Err(usage(
+            "interactive run writes each receipt under the home directory",
+        ));
+    }
+    let home = home_dir(flags)?;
+    let lock = flags
+        .lock
+        .clone()
+        .unwrap_or_else(|| home.join("knolo.infer.lock.json"));
+    let chats = home.join("chats");
+    std::fs::create_dir_all(&chats).map_err(|err| {
+        fail(
+            ErrorCode::ReceiptPersistFailed,
+            format!("cannot create the chat directory: {err}"),
+        )
+    })?;
+    let evidence = evidence_from_text(
+        flags.knowledge_image.as_deref(),
+        &flags.query_receipts,
+        &flags.reflex_receipts,
+    )?;
+    let signing_key = match &flags.sign_key {
+        Some(path) => Some(load_ed25519_seed(path)?),
+        None => None,
+    };
+    eprintln!("model {alias}. An empty line or q exits.");
+    let mut index = 1u32;
+    loop {
+        eprint!("> ");
+        let _ = io::stderr().flush();
+        let mut line = String::new();
+        let read = io::stdin().read_line(&mut line).map_err(|err| {
+            fail(
+                ErrorCode::ContractInvalid,
+                format!("cannot read the prompt: {err}"),
+            )
+        })?;
+        if read == 0 {
+            return Ok(());
+        }
+        let prompt = line.trim();
+        if prompt.is_empty() || prompt == "q" {
+            return Ok(());
+        }
+        let receipt_path = chats.join(format!("{index}.cbor"));
+        let output = run_pinned(&RunOptions {
+            alias: alias.to_string(),
+            prompt: prompt.to_string(),
+            mode: "pinned".to_string(),
+            lock_path: lock.clone(),
+            home: home.clone(),
+            weights_dir: flags.weights.clone(),
+            max_output_tokens: flags.max_tokens,
+            temperature_micros: flags.temperature_micros,
+            seed: flags.seed,
+            stream: None,
+            evidence: evidence.clone(),
+            signing_key,
+        })?;
+        write_atomic(
+            &receipt_path,
+            &output.receipt_bytes,
+            ErrorCode::ReceiptPersistFailed,
+        )?;
+        if flags.json {
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&serde_json::json!({
+                    "finishReason": output.receipt.output.finish_reason,
+                    "outputText": output.output_text,
+                    "receipt": receipt_path,
+                    "receiptId": output.receipt.receipt_id.as_str(),
+                }))
+                .expect("chat json")
+            );
+        } else {
+            println!("{}", output.output_text);
+        }
+        index = index.saturating_add(1);
+    }
+}
+
 fn open_for_verify(
     alias: &str,
     lock_path: &Path,
@@ -241,13 +345,7 @@ fn open_for_verify(
         .models
         .get(alias)
         .ok_or_else(|| fail(ErrorCode::ModelArtifactMissing, "alias is not pinned"))?;
-    let cwd = std::env::current_dir().map_err(|err| {
-        fail(
-            ErrorCode::ModelArtifactMissing,
-            format!("cannot resolve the working directory: {err}"),
-        )
-    })?;
-    let kmodel = cwd.join(&pin.model_image_path);
+    let kmodel = resolve_lock_relative(lock_path, &pin.model_image_path);
     let weights = match weights {
         Some(dir) => dir.to_path_buf(),
         None => kmodel.parent().unwrap_or(Path::new(".")).to_path_buf(),

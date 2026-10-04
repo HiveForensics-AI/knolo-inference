@@ -2,11 +2,13 @@
 //! and decoded to the f32 oracle before the forward.
 
 use std::collections::BTreeMap;
+use std::sync::Arc;
 
 use infer_artifact::{GgufTensorType, TensorBytes};
 use infer_contracts::{fail, ErrorCode, InferFailure, TensorSpecV1};
 
-use crate::dequant::dequant_gguf;
+use crate::dequant::{dequant_gguf, dequant_gguf_limited, RUN_MAX_DEQUANT_BYTES};
+use crate::llama_shape::{LlamaShape, LlamaTensors, PackedTensor};
 use crate::micro::MicroWeights;
 
 pub const ADAPTER_ID: &str = "knolo.llama.v1";
@@ -119,6 +121,200 @@ fn push(specs: &mut Vec<TensorSpecV1>, name: &str, shape: Vec<u32>, dtype: &str)
 
 pub fn kv_width() -> usize {
     KV_HEADS * HEAD_DIM
+}
+
+pub fn decode_wide_tensors(
+    tensors: &[TensorBytes],
+    shape: &LlamaShape,
+) -> Result<LlamaTensors, InferFailure> {
+    let mut dense = BTreeMap::new();
+    let mut packed = Vec::new();
+    for tensor in tensors {
+        if is_quant(&tensor.dtype) {
+            if tensor.name == "embed.weight" {
+                let values = decode_tensor_limited(tensor)?;
+                insert_dense(&mut dense, tensor.name.clone(), values)?;
+            } else {
+                packed.push(pack_tensor(tensor)?);
+            }
+        } else {
+            let values = decode_tensor_limited(tensor)?;
+            insert_dense(&mut dense, tensor.name.clone(), values)?;
+        }
+    }
+    require_dense(&dense, "embed.weight", shape.vocab * shape.hidden)?;
+    require_dense(&dense, "final_norm.weight", shape.hidden)?;
+    if !packed.iter().any(|tensor| tensor.name == "lm_head.weight") {
+        require_dense(&dense, "lm_head.weight", shape.vocab * shape.hidden)?;
+    }
+    for layer in 0..shape.layers {
+        let prefix = format!("layers.{layer}");
+        require_dense(&dense, &format!("{prefix}.attn_norm.weight"), shape.hidden)?;
+        require_dense(&dense, &format!("{prefix}.mlp_norm.weight"), shape.hidden)?;
+        require_matrix(
+            &dense,
+            &packed,
+            &format!("{prefix}.attn.q.weight"),
+            shape.hidden * shape.hidden,
+        )?;
+        require_matrix(
+            &dense,
+            &packed,
+            &format!("{prefix}.attn.k.weight"),
+            shape.kv_heads * shape.head_dim * shape.hidden,
+        )?;
+        require_matrix(
+            &dense,
+            &packed,
+            &format!("{prefix}.attn.v.weight"),
+            shape.kv_heads * shape.head_dim * shape.hidden,
+        )?;
+        require_matrix(
+            &dense,
+            &packed,
+            &format!("{prefix}.attn.o.weight"),
+            shape.hidden * shape.hidden,
+        )?;
+        require_matrix(
+            &dense,
+            &packed,
+            &format!("{prefix}.mlp.gate.weight"),
+            shape.intermediate * shape.hidden,
+        )?;
+        require_matrix(
+            &dense,
+            &packed,
+            &format!("{prefix}.mlp.up.weight"),
+            shape.intermediate * shape.hidden,
+        )?;
+        require_matrix(
+            &dense,
+            &packed,
+            &format!("{prefix}.mlp.down.weight"),
+            shape.hidden * shape.intermediate,
+        )?;
+    }
+    let known = dense.len() + packed.len();
+    if known != tensors.len() {
+        return Err(fail(
+            ErrorCode::ModelImageInvalid,
+            "llama weights contain an unexpected tensor",
+        ));
+    }
+    Ok(LlamaTensors { dense, packed })
+}
+
+fn insert_dense(
+    dense: &mut BTreeMap<String, Arc<[f32]>>,
+    name: String,
+    values: Vec<f32>,
+) -> Result<(), InferFailure> {
+    if dense.insert(name.clone(), Arc::from(values)).is_some() {
+        return Err(fail(
+            ErrorCode::ModelImageInvalid,
+            format!("duplicate tensor {name}"),
+        ));
+    }
+    Ok(())
+}
+
+fn require_dense(
+    dense: &BTreeMap<String, Arc<[f32]>>,
+    name: &str,
+    len: usize,
+) -> Result<(), InferFailure> {
+    let Some(values) = dense.get(name) else {
+        return Err(fail(
+            ErrorCode::ModelArtifactMissing,
+            format!("missing tensor {name}"),
+        ));
+    };
+    if values.len() != len {
+        return Err(fail(
+            ErrorCode::ModelImageInvalid,
+            format!("tensor {name} does not match knolo.llama.v1"),
+        ));
+    }
+    Ok(())
+}
+
+fn require_matrix(
+    dense: &BTreeMap<String, Arc<[f32]>>,
+    packed: &[PackedTensor],
+    name: &str,
+    len: usize,
+) -> Result<(), InferFailure> {
+    if packed.iter().any(|tensor| tensor.name == name) {
+        return Ok(());
+    }
+    require_dense(dense, name, len)
+}
+
+fn pack_tensor(tensor: &TensorBytes) -> Result<PackedTensor, InferFailure> {
+    if tensor.shape.len() != 2 {
+        return Err(fail(
+            ErrorCode::ModelImageInvalid,
+            format!("tensor {} is not a matrix", tensor.name),
+        ));
+    }
+    let rows = tensor.shape[0] as usize;
+    let cols = tensor.shape[1] as usize;
+    let tensor_type = quant_type(&tensor.dtype)?;
+    Ok(PackedTensor {
+        name: tensor.name.clone(),
+        tensor_type,
+        rows,
+        cols,
+        bytes: Arc::from(tensor.bytes.as_slice()),
+    })
+}
+
+fn is_quant(dtype: &str) -> bool {
+    matches!(dtype, "q8_0" | "q4_k_m" | "q5_k_m" | "q6_k")
+}
+
+fn quant_type(dtype: &str) -> Result<GgufTensorType, InferFailure> {
+    Ok(match dtype {
+        "q8_0" => GgufTensorType::Q8_0,
+        "q4_k_m" => GgufTensorType::Q4_K,
+        "q5_k_m" => GgufTensorType::Q5_K,
+        "q6_k" => GgufTensorType::Q6_K,
+        _ => {
+            return Err(fail(
+                ErrorCode::UnsupportedQuantization,
+                format!("tensor dtype {dtype} is not an allowlisted quant"),
+            ))
+        }
+    })
+}
+
+fn decode_tensor_limited(tensor: &TensorBytes) -> Result<Vec<f32>, InferFailure> {
+    let values = match tensor.dtype.as_str() {
+        "f32" => decode_f32(&tensor.bytes, &tensor.name)?,
+        "f16" => dequant_gguf_limited(GgufTensorType::F16, &tensor.bytes, RUN_MAX_DEQUANT_BYTES)?,
+        "bf16" => decode_bf16(&tensor.bytes, &tensor.name)?,
+        "q8_0" => dequant_gguf_limited(GgufTensorType::Q8_0, &tensor.bytes, RUN_MAX_DEQUANT_BYTES)?,
+        "q4_k_m" => {
+            dequant_gguf_limited(GgufTensorType::Q4_K, &tensor.bytes, RUN_MAX_DEQUANT_BYTES)?
+        }
+        "q5_k_m" => {
+            dequant_gguf_limited(GgufTensorType::Q5_K, &tensor.bytes, RUN_MAX_DEQUANT_BYTES)?
+        }
+        "q6_k" => dequant_gguf_limited(GgufTensorType::Q6_K, &tensor.bytes, RUN_MAX_DEQUANT_BYTES)?,
+        _ => {
+            return Err(fail(
+                ErrorCode::UnsupportedQuantization,
+                format!("tensor {} is not f32, f16, or bf16", tensor.name),
+            ))
+        }
+    };
+    if values.iter().any(|value| !value.is_finite()) {
+        return Err(fail(
+            ErrorCode::ModelImageInvalid,
+            format!("tensor {} contains a non-finite value", tensor.name),
+        ));
+    }
+    Ok(values)
 }
 
 pub fn decode_llama_weights(tensors: &[TensorBytes]) -> Result<MicroWeights, InferFailure> {

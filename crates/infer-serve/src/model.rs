@@ -7,7 +7,7 @@ use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use infer_artifact::{read_lockfile, verify_image};
+use infer_artifact::{read_lockfile, resolve_lock_relative, verify_image};
 use infer_contracts::{
     fail, DigestHex, ErrorCode, FixedPointSamplerV1, InferFailure, ModelImageV1, SamplerPlanV1,
 };
@@ -71,7 +71,7 @@ pub fn resolve_pin(
         .models
         .get(alias)
         .ok_or_else(|| fail(ErrorCode::ModelArtifactMissing, "alias is not pinned"))?;
-    let kmodel = work_dir.join(&pin.model_image_path);
+    let kmodel = resolve_lock_relative(&lock_path, &pin.model_image_path);
     let weights = match weights_dir {
         Some(dir) => dir.to_path_buf(),
         None => kmodel

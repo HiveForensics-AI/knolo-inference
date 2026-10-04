@@ -3,6 +3,7 @@
 use infer_artifact::TensorBytes;
 use infer_contracts::{DigestHex, InferFailure, ModelImageV1, PlacementPlanV1, TensorSpecV1};
 
+use crate::llama_shape::{LlamaShape, LlamaTensors};
 use crate::micro::MicroWeights;
 
 #[derive(Debug, Clone)]
@@ -14,6 +15,10 @@ pub struct VerifiedWeightSource {
     pub tensors: Vec<TensorBytes>,
     pub weights: MicroWeights,
     pub weight_bytes: u64,
+    /// Set for `knolo.llama.v1`. The toy fixture uses [`LlamaShape::toy`].
+    pub llama: Option<LlamaShape>,
+    /// Set when the Llama inventory is wider than the toy fixture.
+    pub llama_tensors: Option<LlamaTensors>,
 }
 
 pub type EngineError = InferFailure;

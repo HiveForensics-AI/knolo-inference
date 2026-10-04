@@ -28,9 +28,26 @@ pub fn planned_kv_bytes(layout: &KvLayout, page_count: u32) -> Result<u64, Infer
     Ok(planned_kv_pool(layout, page_count)?.total_bytes)
 }
 
+/// Same count as [`planned_kv_bytes`] with a caller-supplied cap.
+pub fn planned_kv_bytes_within(
+    layout: &KvLayout,
+    page_count: u32,
+    max_bytes: u64,
+) -> Result<u64, InferFailure> {
+    Ok(planned_kv_pool_within(layout, page_count, max_bytes)?.total_bytes)
+}
+
 pub(crate) fn planned_kv_pool(
     layout: &KvLayout,
     page_count: u32,
+) -> Result<KvPoolPlan, InferFailure> {
+    planned_kv_pool_within(layout, page_count, MAX_POOL_BYTES)
+}
+
+pub(crate) fn planned_kv_pool_within(
+    layout: &KvLayout,
+    page_count: u32,
+    max_bytes: u64,
 ) -> Result<KvPoolPlan, InferFailure> {
     if layout.dtype != "f32"
         || layout.layers == 0
@@ -58,10 +75,16 @@ pub(crate) fn planned_kv_pool(
     let total_bytes = page_bytes
         .checked_mul(u64::from(page_count))
         .ok_or_else(|| fail(ErrorCode::InsufficientMemory, "kv page pool size overflows"))?;
-    if total_bytes > MAX_POOL_BYTES {
+    if total_bytes > max_bytes {
+        if max_bytes <= MAX_POOL_BYTES {
+            return Err(fail(
+                ErrorCode::InsufficientMemory,
+                "kv page pool exceeds 64 MiB",
+            ));
+        }
         return Err(fail(
             ErrorCode::InsufficientMemory,
-            "kv page pool exceeds 64 MiB",
+            "kv page pool exceeds the run reservation",
         ));
     }
     Ok(KvPoolPlan { slots, total_bytes })

@@ -1,8 +1,10 @@
 //! `knolo-infer` compiles model images and runs `knolo.micro.v1` and `knolo.llama.v1`.
 //!
-//! `pull` copies a pinned local artifact and checks the digest. The `cuda`
-//! feature places `run` and the serve worker on `slot-0`.
+//! `pull` of a lockfile alias copies a pinned local artifact and checks the
+//! digest. `pull` of a catalog id streams that row from an allowlisted host.
+//! The `cuda` feature places `run` and the serve worker on `slot-0`.
 
+mod library_cmd;
 mod run_cmd;
 
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
@@ -10,13 +12,14 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use infer_artifact::{
-    compile_manifest, hash_current_executable, load_ed25519_public, load_ed25519_seed,
-    new_lockfile, pin_alias, portable_model_path, pull_alias, read_lockfile, verify_image,
-    verify_image_signatures, verify_weights, write_lockfile, write_model_image, DigestHex,
+    compile_manifest_capped, hash_current_executable, load_ed25519_public, load_ed25519_seed,
+    new_lockfile, pin_alias, portable_model_path, read_lockfile, verify_image,
+    verify_image_signatures, verify_weights_capped, write_lockfile, write_model_image, DigestHex,
     ErrorCode, InferFailure, Verification,
 };
 use infer_receipt::default_home;
 use infer_receipt::plan_pinned;
+use infer_receipt::CANDLE_CPU_VERSION;
 use infer_serve::{
     block_termination_signals, wait_for_termination_signal, ServeConfig, Supervisor,
 };
@@ -37,6 +40,7 @@ fn run(args: impl Iterator<Item = String>) -> Result<(), InferFailure> {
         print!("{HELP}");
         return Ok(());
     }
+    reject_new_flags(&flags)?;
     if flags.positionals[0].as_str() != "serve" {
         reject_serve_flags(&flags)?;
     }
@@ -50,16 +54,37 @@ fn run(args: impl Iterator<Item = String>) -> Result<(), InferFailure> {
             reject_release_flags(&flags, false)?;
             pin_command(&flags)
         }
-        "pull" => {
-            reject_execution_flags(&flags)?;
+        "library" => {
+            reject_generation_flags(&flags)?;
             reject_release_flags(&flags, false)?;
-            pull_command(&flags)
+            library_cmd::library_command(&flags)
+        }
+        "list" => {
+            reject_generation_flags(&flags)?;
+            reject_release_flags(&flags, false)?;
+            library_cmd::list_command(&flags)
+        }
+        "rm" => {
+            reject_generation_flags(&flags)?;
+            reject_release_flags(&flags, false)?;
+            library_cmd::rm_command(&flags)
+        }
+        "pull" => {
+            reject_generation_flags(&flags)?;
+            reject_release_flags(&flags, false)?;
+            library_cmd::pull_command(&flags)
         }
         "plan" => plan_command(&flags),
         "run" => run_cmd::run_command(&flags),
         "receipt" => run_cmd::receipt_command(&flags),
         "replay" => run_cmd::replay_command(&flags),
         "serve" => serve_command(&flags),
+        "version" => {
+            reject_execution_flags(&flags)?;
+            reject_release_flags(&flags, false)?;
+            reject_unused(&flags, false, false)?;
+            version_command(&flags)
+        }
         other => Err(usage(format!("unknown command {other}"))),
     }
 }
@@ -159,12 +184,11 @@ fn parse_bind(value: &str) -> Result<SocketAddr, InferFailure> {
     Ok(addr)
 }
 
-fn reject_execution_flags(flags: &Flags) -> Result<(), InferFailure> {
+fn reject_generation_flags(flags: &Flags) -> Result<(), InferFailure> {
     if flags.model.is_some()
         || flags.prompt.is_some()
         || flags.mode.is_some()
         || flags.receipt.is_some()
-        || flags.home.is_some()
         || flags.max_tokens.is_some()
         || flags.temperature_micros.is_some()
         || flags.seed.is_some()
@@ -173,6 +197,33 @@ fn reject_execution_flags(flags: &Flags) -> Result<(), InferFailure> {
         return Err(usage(
             "run flags are only valid for run, receipt, and replay",
         ));
+    }
+    Ok(())
+}
+
+fn reject_execution_flags(flags: &Flags) -> Result<(), InferFailure> {
+    reject_generation_flags(flags)?;
+    if flags.home.is_some() {
+        return Err(usage(
+            "run flags are only valid for run, receipt, and replay",
+        ));
+    }
+    Ok(())
+}
+
+fn reject_new_flags(flags: &Flags) -> Result<(), InferFailure> {
+    let command = flags.positionals.first().map(String::as_str);
+    let allow_yes = matches!(command, Some("pull" | "rm" | "library"));
+    let allow_tag = command == Some("library");
+    let allow_catalog = matches!(command, Some("library" | "pull"));
+    if flags.yes && !allow_yes {
+        return Err(usage("--yes is only valid for pull, rm, and library"));
+    }
+    if !flags.tags.is_empty() && !allow_tag {
+        return Err(usage("--tag is only valid for library"));
+    }
+    if flags.catalog.is_some() && !allow_catalog {
+        return Err(usage("--catalog is only valid for library and pull"));
     }
     Ok(())
 }
@@ -242,37 +293,53 @@ fn plan_command(flags: &Flags) -> Result<(), InferFailure> {
     Ok(())
 }
 
-fn pull_command(flags: &Flags) -> Result<(), InferFailure> {
-    if flags.positionals.len() != 2 {
-        return Err(usage("pull requires an alias"));
+fn version_command(flags: &Flags) -> Result<(), InferFailure> {
+    if flags.positionals.len() != 1 {
+        return Err(usage("version takes no arguments"));
     }
-    if flags.out.is_some() || flags.build_root.is_some() || flags.model.is_some() {
-        return Err(usage("pull accepts --lock, --weights, and --json"));
-    }
-    let alias = &flags.positionals[1];
-    let lock = flags
-        .lock
-        .clone()
-        .unwrap_or_else(|| PathBuf::from("knolo.infer.lock.json"));
-    let report = pull_alias(&lock, alias, flags.weights.as_deref())?;
+    let binary = hash_current_executable()?;
+    let engine = current_engine_build(binary)?;
+    let root = engine.root()?;
     if flags.json {
         println!(
             "{}",
             serde_json::to_string_pretty(&serde_json::json!({
-                "alias": alias,
-                "artifactRoot": report.artifact_root.as_str(),
-                "modelImagePath": report.model_image_path,
-                "modelImageRoot": report.image_root.as_str(),
+                "backend": engine.tensor_backend,
+                "buildProfile": engine.build_profile,
+                "engineBuildRoot": root.as_str(),
+                "sourceCommit": engine.source_commit,
+                "version": env!("CARGO_PKG_VERSION"),
             }))
-            .expect("pull json")
+            .expect("version json")
         );
     } else {
-        println!("pulled {alias}");
-        println!("model image   {}", report.image_root);
-        println!("artifact      {}", report.artifact_root);
-        println!("path          {}", report.model_image_path);
+        println!("knolo-infer {}", env!("CARGO_PKG_VERSION"));
+        println!("engine build   {root}");
+        println!("commit         {}", engine.source_commit);
+        println!("backend        {}", engine.tensor_backend);
+        println!("profile        {}", engine.build_profile);
     }
     Ok(())
+}
+
+fn current_engine_build(
+    binary: infer_artifact::DigestHex,
+) -> Result<infer_contracts::EngineBuildDescriptorV1, InferFailure> {
+    #[cfg(feature = "cuda")]
+    {
+        let slot = infer_engine::require_cuda_slot0()?;
+        let bundle = infer_engine::cuda_kernel_bundle(
+            CANDLE_CPU_VERSION,
+            &slot.toolkit_version,
+            &slot.architecture,
+        )?;
+        infer_engine::cuda_engine_build(binary, CANDLE_CPU_VERSION, bundle.root()?)
+    }
+    #[cfg(not(feature = "cuda"))]
+    {
+        let bundle = infer_engine::cpu_kernel_bundle(CANDLE_CPU_VERSION)?;
+        infer_engine::host_engine_build(binary, CANDLE_CPU_VERSION, bundle.root()?)
+    }
 }
 
 fn model_command(flags: &Flags) -> Result<(), InferFailure> {
@@ -295,7 +362,7 @@ fn model_command(flags: &Flags) -> Result<(), InferFailure> {
                 .as_ref()
                 .ok_or_else(|| usage("model build requires --out"))?;
             reject_unused(flags, false, false)?;
-            let compiled = compile_manifest(Path::new(manifest))?;
+            let compiled = compile_manifest_capped(Path::new(manifest))?;
             write_model_image(out, &compiled.bytes)?;
             if flags.json {
                 println!(
@@ -340,7 +407,7 @@ fn model_command(flags: &Flags) -> Result<(), InferFailure> {
             })?;
             let mut verification = verify_image(&bytes)?;
             if let Some(weights) = &flags.weights {
-                verify_weights(&verification.image, weights)?;
+                verify_weights_capped(&verification.image, weights)?;
                 verification.weights_checked = true;
             }
             if let Some(path) = &flags.public_key {
@@ -374,7 +441,7 @@ fn pin_command(flags: &Flags) -> Result<(), InferFailure> {
     })?;
     let mut verification = verify_image(&bytes)?;
     if let Some(weights) = &flags.weights {
-        verify_weights(&verification.image, weights)?;
+        verify_weights_capped(&verification.image, weights)?;
         verification.weights_checked = true;
     }
     let lock_path = flags
@@ -551,6 +618,9 @@ struct Flags {
     sign_key: Option<PathBuf>,
     public_key: Option<PathBuf>,
     help: bool,
+    yes: bool,
+    tags: Vec<String>,
+    catalog: Option<PathBuf>,
     positionals: Vec<String>,
 }
 
@@ -580,6 +650,9 @@ impl Flags {
             sign_key: None,
             public_key: None,
             help: false,
+            yes: false,
+            tags: Vec::new(),
+            catalog: None,
             positionals: Vec::new(),
         };
         let mut args = args.peekable();
@@ -631,6 +704,11 @@ impl Flags {
                 "--public-key" => {
                     flags.public_key = Some(PathBuf::from(required(&mut args, "--public-key")?))
                 }
+                "--yes" => flags.yes = true,
+                "--tag" => flags.tags.push(required(&mut args, "--tag")?),
+                "--catalog" => {
+                    flags.catalog = Some(PathBuf::from(required(&mut args, "--catalog")?))
+                }
                 other if other.starts_with('-') => {
                     return Err(usage(format!("unknown flag {other}")));
                 }
@@ -667,21 +745,35 @@ const HELP: &str = "\
 knolo-infer — compile model images and run the CPU reference
 
 Usage:
+  knolo-infer version [--json]
+  knolo-infer library [--tag <instruct|base|uncensored|new>] [--json] [--catalog <library.json>]
+  knolo-infer library refresh [--catalog <library.json>] [--json]
+  knolo-infer list [--home <dir>] [--lock <file>] [--json]
+  knolo-infer pull <catalog-id> [--yes] [--home <dir>] [--lock <file>] [--catalog <library.json>] [--json]
+  knolo-infer pull <alias> [--lock <file>] [--weights <dir>] [--json]
+  knolo-infer rm <alias> [--yes] [--home <dir>] [--lock <file>]
   knolo-infer model build <manifest.json|yaml> --out <file.kmodel> [--json]
   knolo-infer model inspect <file.kmodel> [--json]
   knolo-infer model verify <file.kmodel> [--weights <dir>] [--json]
   knolo-infer pin <alias> <file.kmodel> [--lock <knolo.infer.lock.json>] [--weights <dir>] [--build-root <sha256-...>] [--json]
-  knolo-infer pull <alias> [--lock <file>] [--weights <dir>] [--json]
   knolo-infer plan <alias> [--intent interactive] [--lock <file>] [--weights <dir>] [--json]
+  knolo-infer run <alias>
   knolo-infer run --model <alias> --prompt <text> --mode pinned --receipt <file.cbor> [--lock <file>] [--home <dir>] [--max-tokens <n>] [--temperature-micros <n> --seed <n>] [--knowledge-image <sha256-...>] [--query-receipt <sha256-...>] [--reflex-receipt <sha256-...>] [--sign-key <file>] [--json]
   knolo-infer receipt verify <file.cbor> [--home <dir>] [--model <alias> --lock <file> --weights <dir>] [--public-key <file>] [--knowledge-image <sha256-...>] [--query-receipt <sha256-...>] [--reflex-receipt <sha256-...>] [--json]
   knolo-infer replay <file.cbor> --model <alias> --prompt <text> [--lock <file>] [--home <dir>] [--out <file>] [--json]
   knolo-infer serve --model <alias> [--lock <file>] [--weights <dir>] [--home <dir>] [--bind 127.0.0.1:6767] [--worker <knolo-infer-worker>] [--sign-key <file>]
 
+version prints the crate version and the engine build root a pinned run records.
+library prints the curated catalog. On a terminal, a number downloads that row. An empty line or q exits. Qwen rows are listed and pull refuses them.
+library refresh reads the pinned file in each named repo and prints a changed sha256. It does not edit the catalog.
+list prints aliases pinned in the home lockfile.
 model verify without --weights checks the model image and does not open weight files.
 pin records modelImageRoot, artifactRoot, and modelImagePath.
-pull stages the pinned local image and its weight files after the digests match. It does not open a network connection.
+pull of a catalog id prints the license, streams the file from an allowlisted Hugging Face host, hashes it, and pins it under the home directory. --yes accepts the license. Without a terminal, catalog pull refuses until --yes is set.
+pull of a lockfile alias copies local files after the digests match. It does not open a network connection.
+rm removes one model directory under the home and drops its alias. It asks unless --yes is set, and it refuses a path outside that directory.
 plan prints a placement for the pinned model. It does not allocate pages or run a forward. throughput is refused.
+run <alias> on a terminal reads one line at a time and writes each receipt under the home directory. run --prompt stays one shot.
 run executes the pinned adapter. Without the cuda feature the device is cpu. With that feature the device is slot-0. throughput mode is refused. The receipt stores roots, not prompt text. --sign-key adds one ed25519 signature over the receipt id.
 serve listens on 127.0.0.1 and runs completions through knolo-infer-worker. Without the cuda feature the worker is the reference oracle. With that feature the worker places on slot-0. A pinned completion receipt is same_build_replayable. exact_replay_verified stays on replay.
 SIGINT and SIGTERM stop new completions, wait up to 30 seconds for admitted work, and then shut down.

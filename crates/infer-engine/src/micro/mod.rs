@@ -186,6 +186,8 @@ pub fn load_verified_micro(
         tensors,
         weights,
         weight_bytes,
+        llama: None,
+        llama_tensors: None,
     })
 }
 

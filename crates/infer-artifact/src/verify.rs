@@ -53,6 +53,18 @@ pub fn verify_weights(image: &ModelImageV1, weights_dir: &Path) -> Result<(), In
     if image.format == "gguf" {
         return crate::gguf::read_gguf_tensors(image, weights_dir).map(|_| ());
     }
+    verify_safetensors(image, weights_dir)
+}
+
+/// Verify weights, allowing a Llama GGUF above 32 MiB up to the run cap.
+pub fn verify_weights_capped(image: &ModelImageV1, weights_dir: &Path) -> Result<(), InferFailure> {
+    if image.format == "gguf" {
+        return crate::gguf::read_gguf_tensors_capped(image, weights_dir).map(|_| ());
+    }
+    verify_safetensors(image, weights_dir)
+}
+
+fn verify_safetensors(image: &ModelImageV1, weights_dir: &Path) -> Result<(), InferFailure> {
     if image.format != "safetensors" {
         return Err(fail(
             ErrorCode::ModelImageInvalid,

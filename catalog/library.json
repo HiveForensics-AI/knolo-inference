@@ -1,0 +1,139 @@
+{
+  "kind": "knolo.infer.library",
+  "version": 1,
+  "models": [
+    {
+      "id": "llama-3.2-1b-instruct",
+      "displayName": "Llama 3.2 1B Instruct",
+      "architecture": "llama",
+      "adapter": "knolo.llama.v1",
+      "repo": "bartowski/Llama-3.2-1B-Instruct-GGUF",
+      "revision": "067b946cf014b7c697f3654f621d577a3e3afd1c",
+      "filename": "Llama-3.2-1B-Instruct-Q4_K_M.gguf",
+      "sizeBytes": 807694464,
+      "sha256": "sha256-6f85a640a97cf2bf5b8e764087b1e83da0fdb51d7c9fab7d0fece9385611df83",
+      "quant": "Q4_K_M",
+      "contextReservation": 2048,
+      "minRamBytes": 4294967296,
+      "licenseId": "llama3.2",
+      "licenseUrl": "https://www.llama.com/llama3_2/license/",
+      "tags": [
+        "instruct"
+      ],
+      "gated": false,
+      "status": "runnable",
+      "chatTemplate": "<|begin_of_text|>{% for message in messages %}<|start_header_id|>{{ message.role }}<|end_header_id|>\n\n{{ message.content }}<|eot_id|>{% endfor %}<|start_header_id|>assistant<|end_header_id|>\n\n",
+      "tokenizer": {
+        "repo": "unsloth/Llama-3.2-1B-Instruct",
+        "revision": "5a8abab4a5d6f164389b1079fb721cfab8d7126c",
+        "filename": "tokenizer.json",
+        "sizeBytes": 17209920,
+        "sha256": "sha256-6b9e4e7fb171f92fd137b777cc2714bf87d11576700a1dcd7a399e7bbe39537b"
+      }
+    },
+    {
+      "id": "llama-3.2-1b-uncensored",
+      "displayName": "Llama 3.2 1B Uncensored",
+      "architecture": "llama",
+      "adapter": "knolo.llama.v1",
+      "repo": "mradermacher/llama3.2-1b-Uncensored-GGUF",
+      "revision": "65c6b424910db19f053705139a5ec9db43a6d9cd",
+      "filename": "llama3.2-1b-Uncensored.Q4_K_M.gguf",
+      "sizeBytes": 807690752,
+      "sha256": "sha256-7f4e096151a7d125a3e0cb002293b9b9f4e6bec0221f7f5ebed96ee3812bcc6f",
+      "quant": "Q4_K_M",
+      "contextReservation": 2048,
+      "minRamBytes": 4294967296,
+      "licenseId": "llama3.2",
+      "licenseUrl": "https://www.llama.com/llama3_2/license/",
+      "tags": [
+        "uncensored",
+        "instruct"
+      ],
+      "gated": false,
+      "status": "runnable",
+      "chatTemplate": "<|begin_of_text|>{% for message in messages %}<|start_header_id|>{{ message.role }}<|end_header_id|>\n\n{{ message.content }}<|eot_id|>{% endfor %}<|start_header_id|>assistant<|end_header_id|>\n\n",
+      "tokenizer": {
+        "repo": "unsloth/Llama-3.2-1B-Instruct",
+        "revision": "5a8abab4a5d6f164389b1079fb721cfab8d7126c",
+        "filename": "tokenizer.json",
+        "sizeBytes": 17209920,
+        "sha256": "sha256-6b9e4e7fb171f92fd137b777cc2714bf87d11576700a1dcd7a399e7bbe39537b"
+      }
+    },
+    {
+      "id": "llama-3.2-3b-instruct",
+      "displayName": "Llama 3.2 3B Instruct",
+      "architecture": "llama",
+      "adapter": "knolo.llama.v1",
+      "repo": "bartowski/Llama-3.2-3B-Instruct-GGUF",
+      "revision": "5ab33fa94d1d04e903623ae72c95d1696f09f9e8",
+      "filename": "Llama-3.2-3B-Instruct-Q4_K_M.gguf",
+      "sizeBytes": 2019377696,
+      "sha256": "sha256-6c1a2b41161032677be168d354123594c0e6e67d2b9227c84f296ad037c728ff",
+      "quant": "Q4_K_M",
+      "contextReservation": 2048,
+      "minRamBytes": 8589934592,
+      "licenseId": "llama3.2",
+      "licenseUrl": "https://www.llama.com/llama3_2/license/",
+      "tags": [
+        "instruct"
+      ],
+      "gated": false,
+      "status": "runnable",
+      "chatTemplate": "<|begin_of_text|>{% for message in messages %}<|start_header_id|>{{ message.role }}<|end_header_id|>\n\n{{ message.content }}<|eot_id|>{% endfor %}<|start_header_id|>assistant<|end_header_id|>\n\n",
+      "tokenizer": {
+        "repo": "unsloth/Llama-3.2-1B-Instruct",
+        "revision": "5a8abab4a5d6f164389b1079fb721cfab8d7126c",
+        "filename": "tokenizer.json",
+        "sizeBytes": 17209920,
+        "sha256": "sha256-6b9e4e7fb171f92fd137b777cc2714bf87d11576700a1dcd7a399e7bbe39537b"
+      }
+    },
+    {
+      "id": "qwen3-4b-instruct",
+      "displayName": "Qwen3 4B Instruct",
+      "architecture": "qwen",
+      "adapter": "knolo.qwen.v1",
+      "repo": "bartowski/Qwen_Qwen3-4B-Instruct-2507-GGUF",
+      "revision": "ae44f08e1392f39c0e474af10c3ff8355c8b6688",
+      "filename": "Qwen_Qwen3-4B-Instruct-2507-Q4_K_M.gguf",
+      "sizeBytes": 2497280736,
+      "sha256": "sha256-2fde00ce69dd4899c70d020845e2638353015bba0fdf161b3eb965f2bca4464e",
+      "quant": "Q4_K_M",
+      "contextReservation": 2048,
+      "minRamBytes": 12884901888,
+      "licenseId": "apache-2.0",
+      "licenseUrl": "https://www.apache.org/licenses/LICENSE-2.0",
+      "tags": [
+        "instruct",
+        "new"
+      ],
+      "gated": false,
+      "status": "not_supported"
+    },
+    {
+      "id": "qwen3-8b-abliterated",
+      "displayName": "Qwen3 8B Abliterated",
+      "architecture": "qwen",
+      "adapter": "knolo.qwen.v1",
+      "repo": "bartowski/mlabonne_Qwen3-8B-abliterated-GGUF",
+      "revision": "0e66e6f836c802246b69941780ec8ef32670dc09",
+      "filename": "mlabonne_Qwen3-8B-abliterated-Q4_K_M.gguf",
+      "sizeBytes": 5027784288,
+      "sha256": "sha256-361557e69ad101ee22b1baf427283b7ddcf81bc7532b8cee8ac2c6b4d1b81ead",
+      "quant": "Q4_K_M",
+      "contextReservation": 2048,
+      "minRamBytes": 17179869184,
+      "licenseId": "apache-2.0",
+      "licenseUrl": "https://www.apache.org/licenses/LICENSE-2.0",
+      "tags": [
+        "instruct",
+        "uncensored",
+        "new"
+      ],
+      "gated": false,
+      "status": "not_supported"
+    }
+  ]
+}

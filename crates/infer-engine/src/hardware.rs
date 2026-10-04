@@ -5,7 +5,7 @@
 
 use std::collections::BTreeMap;
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use infer_contracts::{fail, DigestHex, ErrorCode, GpuProbeV1, HardwareProbeV1, InferFailure};
@@ -337,6 +337,11 @@ fn looks_like_uuid(value: &str) -> bool {
 }
 
 pub fn default_home() -> Result<std::path::PathBuf, InferFailure> {
+    if let Some(value) = std::env::var_os("KNOLO_INFER_HOME") {
+        if !value.is_empty() {
+            return Ok(PathBuf::from(value));
+        }
+    }
     let home = std::env::var_os("HOME").ok_or_else(|| {
         fail(
             ErrorCode::ReceiptPersistFailed,

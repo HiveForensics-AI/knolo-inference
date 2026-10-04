@@ -14,7 +14,7 @@ use crate::authoring::{load_manifest, Authoring, WeightFileAuthoring};
 use crate::io::{hash_regular_file, read_bytes_limited, write_atomic};
 use crate::map_image;
 use crate::paths::{check_relative_posix, resolve_inside};
-use crate::verify::{verify_image, verify_weights};
+use crate::verify::{verify_image, verify_weights, verify_weights_capped};
 use infer_contracts::decode_hex;
 
 #[derive(Debug)]
@@ -26,11 +26,24 @@ pub struct CompiledModel {
 }
 
 pub fn compile_manifest(path: &Path) -> Result<CompiledModel, InferFailure> {
+    compile_manifest_inner(path, false)
+}
+
+/// Compile a Llama GGUF that may exceed the cold 32 MiB reader.
+pub fn compile_manifest_capped(path: &Path) -> Result<CompiledModel, InferFailure> {
+    compile_manifest_inner(path, true)
+}
+
+fn compile_manifest_inner(path: &Path, run_caps: bool) -> Result<CompiledModel, InferFailure> {
     let loaded = load_manifest(path)?;
     let image = build_image(&loaded.manifest, &loaded.base)?;
     let bytes = image.to_bytes().map_err(map_image)?;
     let verification = verify_image(&bytes)?;
-    verify_weights(&verification.image, &loaded.base)?;
+    if run_caps {
+        verify_weights_capped(&verification.image, &loaded.base)?;
+    } else {
+        verify_weights(&verification.image, &loaded.base)?;
+    }
     Ok(CompiledModel {
         bytes,
         image_root: verification.image_root,

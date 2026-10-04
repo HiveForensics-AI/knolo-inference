@@ -23,7 +23,7 @@ The model-image layer:
 - tokenizer and template bytes are embedded; weight bytes stay in external files
 - safetensors headers are checked against the tensor inventory after the file hash matches
 - `knolo.infer.lock.json` pins an alias to the model-image root, artifact root, and relative path
-- `knolo-infer pull` copies the pinned local image and weight files after the digests match. It does not open a network connection
+- `knolo-infer pull` of a lockfile alias copies the pinned local image and weight files after the digests match and does not open a network connection. `pull` of a catalog id streams that file from an allowlisted Hugging Face host
 
 The CPU micro-model:
 
@@ -274,6 +274,45 @@ GGUF:
 
 This machine can prove the CPU path. `cargo test --workspace` does not enable CUDA. `knolo-infer run` and `knolo-infer serve` then place the model on `cpu`. With `--features cuda`, both place it on `slot-0` and the receipt names that device. The specs are `spec/KIP-INFER-0022-cuda-run.md` and `spec/KIP-INFER-0023-cuda-serve.md`.
 
+## Install
+
+The published archive is the CPU build. It contains `knolo-infer` and `knolo-infer-worker`. A CUDA build is not what the installer selects.
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/HiveForensics-AI/knolo-inference/main/scripts/install.sh | bash
+```
+
+That script refuses to run as root. It checks `SHA256SUMS`, then installs both binaries into `~/.local/bin`. `KNOLO_INFER_PREFIX` changes that directory. The default archive is Linux x86_64.
+
+From a checkout, with Rust 1.85 or newer:
+
+```bash
+cargo install --path crates/infer-cli --locked
+cargo install --path crates/infer-serve --locked
+```
+
+`knolo-infer version` prints the crate version and the engine build root a pinned run records.
+
+## Library
+
+`knolo-infer library` prints the curated catalog. On a terminal, a number downloads that row. An empty line or `q` exits. `library --tag` can be repeated (`instruct`, `base`, `uncensored`, `new`) and a row must have every tag. `library --json` prints the same rows for a script.
+
+```bash
+knolo-infer library
+knolo-infer pull llama-3.2-1b-instruct --yes
+knolo-infer list
+knolo-infer run llama-3.2-1b-instruct
+knolo-infer serve --model llama-3.2-1b-instruct
+```
+
+The runnable rows are Llama 3.2 1B Instruct, one public Llama 3.2 1B uncensored model, and Llama 3.2 3B Instruct, each at `Q4_K_M`. Qwen rows are listed and `pull` refuses them before any download. Real Llama weights run on CPU. The context reservation is at most 2048 tokens. The chat template has system, user, and assistant turns, and it has no tools and no images.
+
+`pull` prints the license and waits for `y` unless `--yes` is set. Without a terminal it refuses until `--yes` is set. Files land in `$KNOLO_INFER_HOME`, which defaults to `~/.knolo/infer`. `list` shows what is pinned there. `rm` deletes one model directory under that home and asks unless `--yes` is set.
+
+`run <name>` on a terminal reads one line at a time and writes each receipt under the home directory. `run --prompt` stays one shot. `library refresh` rereads the pinned file in each named repo and prints a changed sha256. It does not edit `catalog/library.json`. How a row is added, and which hosts a download may use, is in `docs/LIBRARY.md`.
+
+A CUDA build needs `nvcc` on `PATH`. `CUDA_ROOT` and `CUDA_HOME` are the toolkit prefix. `LD_LIBRARY_PATH` includes that prefix's `lib` directory, which is where `libcublas` is loaded. `cudarc` reads `CUDA_ROOT`. Pass `--features cuda` to the `cargo install` commands above. The default binary does not.
+
 ## Develop
 
 ```bash
@@ -282,7 +321,7 @@ npm install
 npm test
 ```
 
-`cargo test -p infer-engine` rewrites `models/micro-transformer/`, `models/llama-tiny/`, `conformance/micro-model/expected.json`, and `conformance/llama-tiny/expected.json`. `cargo test -p infer-native` checks Candle CPU against the live oracle. Neither test uses the network.
+`cargo test -p infer-engine` rewrites `models/micro-transformer/`, `models/llama-tiny/`, `conformance/micro-model/expected.json`, and `conformance/llama-tiny/expected.json`. `cargo test -p infer-native` checks Candle CPU against the live oracle. Neither test uses the network. Catalog tests serve bytes on `127.0.0.1` and do not contact Hugging Face. `cargo test` does not rewrite `catalog/library.json`.
 
 Build and check a model image:
 

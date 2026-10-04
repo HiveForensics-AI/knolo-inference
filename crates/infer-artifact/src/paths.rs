@@ -69,6 +69,27 @@ pub fn resolve_inside(
     Ok(canon)
 }
 
+/// A pin is relative to the lockfile directory when that file exists, and
+/// relative to the working directory otherwise. Both layouts are the same
+/// path when the lockfile lives in the working directory.
+pub fn resolve_lock_relative(lock_path: &Path, relative: &str) -> PathBuf {
+    let parent = lock_path
+        .parent()
+        .filter(|path| !path.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+    let from_lock = parent.join(relative);
+    if from_lock.is_file() {
+        return from_lock;
+    }
+    if let Ok(cwd) = std::env::current_dir() {
+        let from_cwd = cwd.join(relative);
+        if from_cwd.is_file() {
+            return from_cwd;
+        }
+    }
+    from_lock
+}
+
 pub fn portable_model_path(path: &Path) -> Result<String, InferFailure> {
     let text = path.to_str().ok_or_else(|| {
         fail(

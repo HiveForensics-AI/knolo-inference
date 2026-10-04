@@ -16,6 +16,7 @@ pub use infer_engine::{
     cpu_kernel_bundle, cpu_kernel_plan_root, default_home, host_engine_build, load_sampler_plan,
     probe_machine, verify_journal, Journal,
 };
+pub use infer_native::CANDLE_CPU_VERSION;
 pub use run::{
     plan_pinned, replay_pinned, run_pinned, PlacementSummary, ReplayOptions, RunOptions, RunOutput,
 };

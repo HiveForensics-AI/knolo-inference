@@ -9,8 +9,8 @@ use infer_contracts::{fail, DigestHex, ErrorCode, InferFailure};
 
 use crate::io::write_atomic;
 use crate::lockfile::read_lockfile;
-use crate::paths::resolve_inside;
-use crate::verify::{verify_image, verify_weights};
+use crate::paths::{resolve_inside, resolve_lock_relative};
+use crate::verify::{verify_image, verify_weights_capped};
 
 pub struct PullReport {
     pub image_root: DigestHex,
@@ -29,18 +29,13 @@ pub fn pull_alias(
         .models
         .get(alias)
         .ok_or_else(|| fail(ErrorCode::ModelArtifactMissing, "alias is not pinned"))?;
-    let cwd = std::env::current_dir().map_err(|err| {
-        fail(
+    let kmodel = resolve_lock_relative(lock_path, &pin.model_image_path);
+    if !kmodel.is_file() {
+        return Err(fail(
             ErrorCode::ModelArtifactMissing,
-            format!("cannot resolve the working directory: {err}"),
-        )
-    })?;
-    let kmodel = resolve_inside(
-        &cwd,
-        &pin.model_image_path,
-        ErrorCode::ModelImageInvalid,
-        ErrorCode::ModelArtifactMissing,
-    )?;
+            "model image is missing",
+        ));
+    }
     let image_bytes = fs::read(&kmodel).map_err(|err| {
         if err.kind() == std::io::ErrorKind::NotFound {
             fail(ErrorCode::ModelArtifactMissing, "model image is missing")
@@ -67,7 +62,7 @@ pub fn pull_alias(
             .unwrap_or_else(|| Path::new("."))
             .to_path_buf(),
     };
-    verify_weights(&verification.image, &weights)?;
+    verify_weights_capped(&verification.image, &weights)?;
     let mut staged = Vec::with_capacity(verification.image.files.len());
     for file in &verification.image.files {
         let path = resolve_inside(

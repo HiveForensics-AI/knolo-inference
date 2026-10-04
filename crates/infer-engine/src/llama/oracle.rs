@@ -4,8 +4,8 @@
 use infer_contracts::{fail, ErrorCode, InferFailure, ModelImageV1, PlacementPlanV1, TensorSpecV1};
 
 use crate::llama::weights::{
-    kv_width, llama_tensor_specs, ADAPTER_ID, BLOCK_SIZE, HEADS, HEAD_DIM, HIDDEN, INTERMEDIATE,
-    KV_HEADS, LAYERS, RMS_EPS, ROPE_THETA, VOCAB,
+    kv_width, ADAPTER_ID, BLOCK_SIZE, HEADS, HEAD_DIM, HIDDEN, INTERMEDIATE, KV_HEADS, LAYERS,
+    RMS_EPS, ROPE_THETA, VOCAB,
 };
 use crate::micro::{add_residual, gemv, rmsnorm, rope, silu, softmax, MicroWeights};
 use crate::traits::{
@@ -20,6 +20,7 @@ pub struct LlamaOracle {
     layout: KvLayout,
     context_limit: u32,
     weights: MicroWeights,
+    wide: Option<super::forward::WideForward>,
 }
 
 impl LlamaOracle {
@@ -45,6 +46,54 @@ impl LlamaOracle {
             layout: super::llama_kv_layout(),
             context_limit,
             weights: source.weights.clone(),
+            wide: None,
+        })
+    }
+
+    pub fn wide(source: &VerifiedWeightSource, context_limit: u32) -> Result<Self, InferFailure> {
+        let shape = source.llama.ok_or_else(|| {
+            fail(
+                ErrorCode::ModelImageInvalid,
+                "wide llama forward is missing its shape",
+            )
+        })?;
+        if shape.is_toy() {
+            return Self::new(source, context_limit);
+        }
+        if context_limit == 0 || context_limit > shape.context {
+            return Err(fail(
+                ErrorCode::PlacementUnsatisfiable,
+                "llama context does not fit the reserved context",
+            ));
+        }
+        let tensors = source.llama_tensors.clone().ok_or_else(|| {
+            fail(
+                ErrorCode::ModelImageInvalid,
+                "wide llama forward is missing its tensors",
+            )
+        })?;
+        Ok(Self {
+            identity: ModelRuntimeIdentity {
+                adapter_id: ADAPTER_ID,
+                model_image_root: source.image_root.clone(),
+                artifact_root: source.artifact_root.clone(),
+                runtime_root: source.runtime_root.clone(),
+            },
+            capabilities: ModelCapabilities {
+                max_context_tokens: context_limit,
+                vocab_size: shape.vocab as u32,
+                text_generation: true,
+            },
+            layout: KvLayout {
+                layers: shape.layers as u32,
+                kv_heads: shape.kv_heads as u32,
+                head_dim: shape.head_dim as u32,
+                block_size: shape.block_size(),
+                dtype: "f32",
+            },
+            context_limit,
+            weights: source.weights.clone(),
+            wide: Some(super::forward::WideForward { shape, tensors }),
         })
     }
 
@@ -65,6 +114,15 @@ impl LlamaOracle {
                 "llama context length overflows",
             )
         })?;
+        if self.wide.is_some() {
+            if end > self.context_limit {
+                return Err(fail(
+                    ErrorCode::ContextLimitExceeded,
+                    "llama prompt does not fit in the reserved context",
+                ));
+            }
+            return Ok(());
+        }
         if end > self.context_limit || end > self.layout.block_size {
             return Err(fail(
                 ErrorCode::ContextLimitExceeded,
@@ -80,6 +138,9 @@ impl LlamaOracle {
         kv: &mut dyn KvStore,
         sequence: u64,
     ) -> Result<Vec<f32>, InferFailure> {
+        if let Some(wide) = &self.wide {
+            return super::forward::wide_step(wide, token, kv, sequence);
+        }
         if token as usize >= VOCAB {
             return Err(fail(
                 ErrorCode::PromptCompilationFailed,
@@ -210,8 +271,13 @@ impl ExecutableModel for LlamaOracle {
                 "llama prefill prompt is empty",
             ));
         }
+        let vocab = self
+            .wide
+            .as_ref()
+            .map(|wide| wide.shape.vocab)
+            .unwrap_or(VOCAB);
         for token in &batch.token_ids {
-            if *token as usize >= VOCAB {
+            if *token as usize >= vocab {
                 return Err(fail(
                     ErrorCode::PromptCompilationFailed,
                     "token id is outside the llama vocabulary",
@@ -267,12 +333,7 @@ impl ArchitectureAdapter for LlamaAdapter {
 
     fn expected_tensors(&self, image: &ModelImageV1) -> Result<Vec<TensorSpecV1>, InferFailure> {
         self.validate_config(image)?;
-        let dtype = image
-            .precisions
-            .first()
-            .map(String::as_str)
-            .unwrap_or("f32");
-        Ok(llama_tensor_specs(dtype))
+        Ok(image.tensor_inventory.clone())
     }
 
     fn build(
@@ -288,6 +349,12 @@ impl ArchitectureAdapter for LlamaAdapter {
             ));
         }
         super::accept_llama_placement(source, placement)?;
+        if source.llama.is_some_and(|shape| !shape.is_toy()) {
+            return Ok(Box::new(LlamaOracle::wide(
+                source,
+                placement.context_reservation_tokens,
+            )?));
+        }
         Ok(Box::new(LlamaOracle::new(
             source,
             placement.context_reservation_tokens,

@@ -188,6 +188,7 @@ mod large_placement;
 mod latency;
 mod linear;
 mod llama;
+mod llama_shape;
 mod load;
 mod memory;
 mod memory_refusal;
@@ -455,10 +456,12 @@ pub use linear::{
 pub use llama::{
     accept_llama_placement, adapter_vocab, llama_cpu_placement, llama_cuda_placement,
     llama_declared_storage, llama_kv_layout, llama_placement_bytes, load_verified_llama,
-    load_verified_model, render_llama_conformance, write_llama_gguf, write_llama_model,
-    write_llama_precision, LlamaAdapter, LlamaModelFiles, LLAMA_ADAPTER_ID, LLAMA_BLOCK_SIZE,
-    LLAMA_FIXTURE_CASES, LLAMA_TEMPLATE_JINJA, LLAMA_TOKENIZER_JSON, LLAMA_VOCAB,
+    load_verified_model, open_paged_kv, prompt_bounds, render_llama_conformance, write_llama_gguf,
+    write_llama_model, write_llama_precision, LlamaAdapter, LlamaModelFiles, LlamaOracle,
+    LLAMA_ADAPTER_ID,
+    LLAMA_BLOCK_SIZE, LLAMA_FIXTURE_CASES, LLAMA_TEMPLATE_JINJA, LLAMA_TOKENIZER_JSON, LLAMA_VOCAB,
 };
+pub use llama_shape::{LlamaShape, LlamaTensors, PackedTensor, RUN_KV_POOL_BYTES};
 pub use load::{
     measure_model_load, verify_model_load, write_load_report, LoadObservation, MicroLoad,
 };
