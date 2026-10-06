@@ -1,0 +1,220 @@
+{
+  "architecture": {
+    "adapter": "knolo.micro.v1",
+    "family": "micro"
+  },
+  "capabilities": [
+    "text-generation"
+  ],
+  "generationDefaults": {
+    "frequencyPenaltyMicros": 0,
+    "maxOutputTokens": 4,
+    "minPMillionths": 0,
+    "presencePenaltyMicros": 0,
+    "repetitionPenaltyMicros": 1000000,
+    "temperatureMicros": 0,
+    "topK": 1,
+    "topPMillionths": 1000000
+  },
+  "kind": "knolo.infer.model-image",
+  "license": {
+    "acceptanceRequired": false,
+    "id": "synthetic"
+  },
+  "name": "knolo/micro",
+  "precisions": [
+    "f32"
+  ],
+  "requirements": {
+    "minimumRamBytes": 1048576,
+    "minimumVramBytes": 0
+  },
+  "sources": [],
+  "specialTokens": {
+    "additional": {},
+    "bos": 1,
+    "eos": 2
+  },
+  "template": {
+    "embedded": "template.jinja"
+  },
+  "tensorInventory": [
+    {
+      "dtype": "f32",
+      "name": "embed.weight",
+      "shape": [
+        16,
+        8
+      ]
+    },
+    {
+      "dtype": "f32",
+      "name": "final_norm.weight",
+      "shape": [
+        8
+      ]
+    },
+    {
+      "dtype": "f32",
+      "name": "layers.0.attn.k.weight",
+      "shape": [
+        4,
+        8
+      ]
+    },
+    {
+      "dtype": "f32",
+      "name": "layers.0.attn.o.weight",
+      "shape": [
+        8,
+        8
+      ]
+    },
+    {
+      "dtype": "f32",
+      "name": "layers.0.attn.q.weight",
+      "shape": [
+        8,
+        8
+      ]
+    },
+    {
+      "dtype": "f32",
+      "name": "layers.0.attn.v.weight",
+      "shape": [
+        4,
+        8
+      ]
+    },
+    {
+      "dtype": "f32",
+      "name": "layers.0.attn_norm.weight",
+      "shape": [
+        8
+      ]
+    },
+    {
+      "dtype": "f32",
+      "name": "layers.0.mlp.down.weight",
+      "shape": [
+        8,
+        16
+      ]
+    },
+    {
+      "dtype": "f32",
+      "name": "layers.0.mlp.gate.weight",
+      "shape": [
+        16,
+        8
+      ]
+    },
+    {
+      "dtype": "f32",
+      "name": "layers.0.mlp.up.weight",
+      "shape": [
+        16,
+        8
+      ]
+    },
+    {
+      "dtype": "f32",
+      "name": "layers.0.mlp_norm.weight",
+      "shape": [
+        8
+      ]
+    },
+    {
+      "dtype": "f32",
+      "name": "layers.1.attn.k.weight",
+      "shape": [
+        4,
+        8
+      ]
+    },
+    {
+      "dtype": "f32",
+      "name": "layers.1.attn.o.weight",
+      "shape": [
+        8,
+        8
+      ]
+    },
+    {
+      "dtype": "f32",
+      "name": "layers.1.attn.q.weight",
+      "shape": [
+        8,
+        8
+      ]
+    },
+    {
+      "dtype": "f32",
+      "name": "layers.1.attn.v.weight",
+      "shape": [
+        4,
+        8
+      ]
+    },
+    {
+      "dtype": "f32",
+      "name": "layers.1.attn_norm.weight",
+      "shape": [
+        8
+      ]
+    },
+    {
+      "dtype": "f32",
+      "name": "layers.1.mlp.down.weight",
+      "shape": [
+        8,
+        16
+      ]
+    },
+    {
+      "dtype": "f32",
+      "name": "layers.1.mlp.gate.weight",
+      "shape": [
+        16,
+        8
+      ]
+    },
+    {
+      "dtype": "f32",
+      "name": "layers.1.mlp.up.weight",
+      "shape": [
+        16,
+        8
+      ]
+    },
+    {
+      "dtype": "f32",
+      "name": "layers.1.mlp_norm.weight",
+      "shape": [
+        8
+      ]
+    },
+    {
+      "dtype": "f32",
+      "name": "lm_head.weight",
+      "shape": [
+        16,
+        8
+      ]
+    }
+  ],
+  "tokenizer": {
+    "embedded": "tokenizer.json"
+  },
+  "variant": "f32",
+  "version": 1,
+  "weights": {
+    "files": [
+      {
+        "path": "weights.safetensors",
+        "sizeBytes": 0
+      }
+    ],
+    "format": "safetensors"
+  }
+}

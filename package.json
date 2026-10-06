@@ -1,0 +1,12 @@
+{
+  "name": "knolo-infer",
+  "private": true,
+  "type": "module",
+  "license": "Apache-2.0",
+  "workspaces": ["packages/*"],
+  "scripts": {
+    "test": "npm test --workspace @knolo/infer",
+    "test:rust": "cargo test",
+    "build": "npm run build --workspace @knolo/infer"
+  }
+}

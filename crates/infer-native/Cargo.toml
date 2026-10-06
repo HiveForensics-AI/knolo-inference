@@ -1,0 +1,16 @@
+[package]
+name = "infer-native"
+description = "Candle CPU backend for the Knolo micro-transformer"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+rust-version.workspace = true
+
+[features]
+cuda = ["candle-core/cuda"]
+
+[dependencies]
+candle-core = { version = "0.8.4", default-features = false }
+infer-contracts = { path = "../infer-contracts" }
+infer-engine = { path = "../infer-engine" }

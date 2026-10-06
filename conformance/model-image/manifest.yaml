@@ -1,0 +1,45 @@
+kind: knolo.infer.model-image
+version: 1
+name: knolo/micro
+variant: f32
+architecture:
+  family: micro
+  adapter: knolo.micro.v1
+weights:
+  format: safetensors
+  files:
+    - path: weights.safetensors
+      sizeBytes: 0
+tokenizer:
+  embedded: tokenizer.json
+template:
+  embedded: template.jinja
+specialTokens:
+  bos: 1
+  eos: 2
+  additional: {}
+generationDefaults:
+  temperatureMicros: 0
+  topPMillionths: 1000000
+  minPMillionths: 0
+  repetitionPenaltyMicros: 1000000
+  presencePenaltyMicros: 0
+  frequencyPenaltyMicros: 0
+  topK: 1
+  maxOutputTokens: 8
+capabilities:
+  - text-generation
+license:
+  id: synthetic
+  acceptanceRequired: false
+sources: []
+tensorInventory:
+  - name: w
+    shape:
+      - 2
+    dtype: f32
+precisions:
+  - f32
+requirements:
+  minimumRamBytes: 1048576
+  minimumVramBytes: 0
