@@ -31,9 +31,7 @@ pub fn parse_inventory(specs: &[TensorSpecV1]) -> Result<InventoryShape, InferFa
     let lm_head = required(&map, "lm_head.weight")?;
     let (lm_vocab, lm_hidden) = matrix(lm_head, "lm_head.weight")?;
     if lm_vocab != vocab || lm_hidden != hidden {
-        return Err(invalid(
-            "lm_head.weight does not match the embedding table",
-        ));
+        return Err(invalid("lm_head.weight does not match the embedding table"));
     }
     let mut layers = 0usize;
     loop {
@@ -59,10 +57,22 @@ pub fn parse_inventory(specs: &[TensorSpecV1]) -> Result<InventoryShape, InferFa
             hidden,
             &format!("{prefix}.attn_norm.weight"),
         )?;
-        let (q, q_hidden) = matrix(required(&map, &format!("{prefix}.attn.q.weight"))?, &format!("{prefix}.attn.q.weight"))?;
-        let (k, k_hidden) = matrix(required(&map, &format!("{prefix}.attn.k.weight"))?, &format!("{prefix}.attn.k.weight"))?;
-        let (v, v_hidden) = matrix(required(&map, &format!("{prefix}.attn.v.weight"))?, &format!("{prefix}.attn.v.weight"))?;
-        let (o_rows, o_cols) = matrix(required(&map, &format!("{prefix}.attn.o.weight"))?, &format!("{prefix}.attn.o.weight"))?;
+        let (q, q_hidden) = matrix(
+            required(&map, &format!("{prefix}.attn.q.weight"))?,
+            &format!("{prefix}.attn.q.weight"),
+        )?;
+        let (k, k_hidden) = matrix(
+            required(&map, &format!("{prefix}.attn.k.weight"))?,
+            &format!("{prefix}.attn.k.weight"),
+        )?;
+        let (v, v_hidden) = matrix(
+            required(&map, &format!("{prefix}.attn.v.weight"))?,
+            &format!("{prefix}.attn.v.weight"),
+        )?;
+        let (o_rows, o_cols) = matrix(
+            required(&map, &format!("{prefix}.attn.o.weight"))?,
+            &format!("{prefix}.attn.o.weight"),
+        )?;
         vector(
             required(&map, &format!("{prefix}.mlp_norm.weight"))?,
             hidden,
@@ -80,13 +90,27 @@ pub fn parse_inventory(specs: &[TensorSpecV1]) -> Result<InventoryShape, InferFa
             required(&map, &format!("{prefix}.mlp.down.weight"))?,
             &format!("{prefix}.mlp.down.weight"),
         )?;
-        if q_hidden != hidden || k_hidden != hidden || v_hidden != hidden || gate_hidden != hidden || up_hidden != hidden {
+        if q_hidden != hidden
+            || k_hidden != hidden
+            || v_hidden != hidden
+            || gate_hidden != hidden
+            || up_hidden != hidden
+        {
             return Err(invalid("a llama projection does not use the hidden size"));
         }
-        if o_rows != hidden || o_cols != q || down_rows != hidden || down_cols != gate || v != k || up != gate {
+        if o_rows != hidden
+            || o_cols != q
+            || down_rows != hidden
+            || down_cols != gate
+            || v != k
+            || up != gate
+        {
             return Err(invalid("a llama projection shape is inconsistent"));
         }
-        if q_rows.get_or_insert(q) != &q || k_rows.get_or_insert(k) != &k || intermediate.get_or_insert(gate) != &gate {
+        if q_rows.get_or_insert(q) != &q
+            || k_rows.get_or_insert(k) != &k
+            || intermediate.get_or_insert(gate) != &gate
+        {
             return Err(invalid("llama layers do not share a shape"));
         }
     }
@@ -158,7 +182,11 @@ pub fn shape_from_metadata(
 }
 
 pub fn meta_u32(metadata: &[GgufMetadata], key: &str) -> Result<Option<u32>, InferFailure> {
-    let Some(value) = metadata.iter().find(|item| item.key == key).map(|item| &item.value) else {
+    let Some(value) = metadata
+        .iter()
+        .find(|item| item.key == key)
+        .map(|item| &item.value)
+    else {
         return Ok(None);
     };
     let number = match value {
@@ -168,7 +196,8 @@ pub fn meta_u32(metadata: &[GgufMetadata], key: &str) -> Result<Option<u32>, Inf
         GgufValue::Int64(value) if *value >= 0 => *value as u64,
         _ => return Err(invalid(format!("gguf metadata {key} is not an integer"))),
     };
-    let number = u32::try_from(number).map_err(|_| invalid(format!("gguf metadata {key} does not fit u32")))?;
+    let number = u32::try_from(number)
+        .map_err(|_| invalid(format!("gguf metadata {key} does not fit u32")))?;
     Ok(Some(number))
 }
 
@@ -177,7 +206,11 @@ fn meta_usize(metadata: &[GgufMetadata], key: &str) -> Result<Option<usize>, Inf
 }
 
 pub fn meta_f32(metadata: &[GgufMetadata], key: &str) -> Result<Option<f32>, InferFailure> {
-    let Some(value) = metadata.iter().find(|item| item.key == key).map(|item| &item.value) else {
+    let Some(value) = metadata
+        .iter()
+        .find(|item| item.key == key)
+        .map(|item| &item.value)
+    else {
         return Ok(None);
     };
     let number = match value {
@@ -211,7 +244,9 @@ fn matrix(spec: &TensorSpecV1, name: &str) -> Result<(usize, usize), InferFailur
 
 fn vector(spec: &TensorSpecV1, hidden: usize, name: &str) -> Result<(), InferFailure> {
     if spec.shape != [hidden as u32] {
-        return Err(invalid(format!("tensor {name} does not match knolo.llama.v1")));
+        return Err(invalid(format!(
+            "tensor {name} does not match knolo.llama.v1"
+        )));
     }
     Ok(())
 }

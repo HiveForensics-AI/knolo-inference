@@ -548,12 +548,6 @@ impl ArchitectureAdapter for CandleLlamaAdapter {
             }
             #[cfg(feature = "cuda")]
             ("candle-cuda", "slot-0") => {
-                if source.llama.is_some_and(|shape| !shape.is_toy()) {
-                    return Err(fail(
-                        ErrorCode::UnsupportedKernel,
-                        "knolo.llama.v1 above the llama-tiny fixture has no CUDA kernel",
-                    ));
-                }
                 accept_llama_placement(source, placement)?;
                 let device = Device::new_cuda(0).map_err(|err| {
                     fail(
@@ -561,6 +555,13 @@ impl ArchitectureAdapter for CandleLlamaAdapter {
                         format!("cuda device slot-0 is not available: {err}"),
                     )
                 })?;
+                if source.llama.is_some_and(|shape| !shape.is_toy()) {
+                    return Ok(Box::new(crate::cuda_llama::CudaWideLlama::new(
+                        source,
+                        placement.context_reservation_tokens,
+                        device,
+                    )?));
+                }
                 Ok(Box::new(CandleMicroModel::new(
                     source,
                     placement.context_reservation_tokens,

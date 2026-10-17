@@ -6,7 +6,8 @@
 //! a converted artifact.
 
 use std::collections::BTreeSet;
-use std::fs;
+use std::fs::{self, File};
+use std::io::Read;
 use std::path::Path;
 
 use sha2::{Digest, Sha256};
@@ -392,6 +393,153 @@ impl<'a> Cursor<'a> {
     }
 }
 
+/// Metadata key and value pairs. The tensor section is not parsed.
+struct GgufPrefix {
+    tensor_count: u64,
+    metadata: Vec<GgufMetadata>,
+    pos: usize,
+}
+
+/// Header and metadata only. A short buffer is `gguf file is truncated`.
+fn read_gguf_prefix(bytes: &[u8]) -> Result<GgufPrefix, InferFailure> {
+    let mut cursor = Cursor { bytes, pos: 0 };
+    let magic = cursor.take(4)?;
+    if magic != b"GGUF" {
+        return Err(image("gguf magic is invalid"));
+    }
+    let version = cursor.u32()?;
+    if version != GGUF_VERSION {
+        return Err(image("gguf version is not 3"));
+    }
+    let tensor_count = cursor.u64()?;
+    let kv_count = cursor.u64()?;
+    if kv_count > MAX_GGUF_METADATA as u64 {
+        return Err(image("gguf metadata count exceeds its limit"));
+    }
+    if tensor_count > MAX_GGUF_TENSORS as u64 {
+        return Err(image("gguf tensor count exceeds its limit"));
+    }
+    if kv_count > cursor.remaining() as u64 {
+        return Err(image("gguf file is truncated"));
+    }
+    let mut metadata = Vec::with_capacity(usize::try_from(kv_count).unwrap_or(0));
+    let mut seen_keys = BTreeSet::new();
+    for _ in 0..kv_count {
+        let key = cursor.string(MAX_KEY_BYTES)?;
+        validate_key(&key)?;
+        if !seen_keys.insert(key.clone()) {
+            return Err(image("duplicate gguf metadata key"));
+        }
+        let value_type = GgufValueType::from_u32(cursor.u32()?)?;
+        let value = cursor.value(value_type, 0)?;
+        metadata.push(GgufMetadata { key, value });
+    }
+    validate_metadata(&metadata)?;
+    Ok(GgufPrefix {
+        tensor_count,
+        metadata,
+        pos: cursor.pos,
+    })
+}
+
+/// Read `tokenizer.ggml.eos_token_id` from a GGUF image.
+///
+/// A safetensors image has no GGUF eos. The read stops at the metadata
+/// section and does not copy tensor payloads.
+pub fn gguf_eos_token_id(
+    image: &infer_contracts::ModelImageV1,
+    weights_dir: &Path,
+) -> Result<Option<u32>, InferFailure> {
+    if image.format != "gguf" {
+        return Ok(None);
+    }
+    for file in &image.files {
+        let path = crate::paths::resolve_inside(
+            weights_dir,
+            &file.path,
+            ErrorCode::ModelImageInvalid,
+            ErrorCode::ModelArtifactMissing,
+        )?;
+        let metadata = read_gguf_metadata(&path)?;
+        if let Some(id) = metadata_u32(&metadata, "tokenizer.ggml.eos_token_id")? {
+            return Ok(Some(id));
+        }
+    }
+    Ok(None)
+}
+
+/// Metadata pairs from the start of a GGUF file. Tensor payloads stay on disk.
+pub fn read_gguf_metadata(path: &Path) -> Result<Vec<GgufMetadata>, InferFailure> {
+    const CHUNK: usize = 65_536;
+    const CAP: usize = 64 * 1024 * 1024;
+    let meta = fs::symlink_metadata(path).map_err(|err| {
+        fail(
+            ErrorCode::ModelArtifactMissing,
+            format!("cannot read gguf metadata: {err}"),
+        )
+    })?;
+    if !meta.file_type().is_file() {
+        return Err(image("gguf metadata path is not a regular file"));
+    }
+    if meta.len() > RUN_MAX_GGUF_BYTES {
+        return Err(image("gguf file exceeds the 8 GiB run read limit"));
+    }
+    let mut file = File::open(path).map_err(|err| {
+        fail(
+            ErrorCode::ModelArtifactMissing,
+            format!("cannot read gguf metadata: {err}"),
+        )
+    })?;
+    let mut buf = Vec::new();
+    loop {
+        match read_gguf_prefix(&buf) {
+            Ok(prefix) => return Ok(prefix.metadata),
+            Err(err) if err.message == "gguf file is truncated" => {
+                if buf.len() as u64 >= meta.len() {
+                    return Err(err);
+                }
+                let next = buf
+                    .len()
+                    .saturating_add(CHUNK)
+                    .min(usize::try_from(meta.len()).unwrap_or(CAP))
+                    .min(CAP);
+                if next <= buf.len() {
+                    return Err(image("gguf metadata exceeds its read cap"));
+                }
+                let start = buf.len();
+                buf.resize(next, 0);
+                file.read_exact(&mut buf[start..]).map_err(|err| {
+                    fail(
+                        ErrorCode::ModelImageInvalid,
+                        format!("cannot read gguf metadata: {err}"),
+                    )
+                })?;
+            }
+            Err(err) => return Err(err),
+        }
+    }
+}
+
+fn metadata_u32(metadata: &[GgufMetadata], key: &str) -> Result<Option<u32>, InferFailure> {
+    let Some(value) = metadata
+        .iter()
+        .find(|item| item.key == key)
+        .map(|item| &item.value)
+    else {
+        return Ok(None);
+    };
+    let number = match value {
+        GgufValue::Uint32(value) => u64::from(*value),
+        GgufValue::Uint64(value) => *value,
+        GgufValue::Int32(value) if *value >= 0 => *value as u64,
+        GgufValue::Int64(value) if *value >= 0 => *value as u64,
+        _ => return Err(image(format!("gguf metadata {key} is not an integer"))),
+    };
+    u32::try_from(number)
+        .map(Some)
+        .map_err(|_| image(format!("gguf metadata {key} does not fit u32")))
+}
+
 /// Parse a buffer the caller has already limited and hashed.
 pub fn parse_gguf_bytes(bytes: &[u8]) -> Result<GgufFile, InferFailure> {
     parse_gguf_bytes_max(bytes, MAX_GGUF_BYTES, false)
@@ -414,39 +562,16 @@ fn parse_gguf_bytes_max(
             "gguf file exceeds the 32 MiB in-memory read limit"
         }));
     }
-    let mut cursor = Cursor { bytes, pos: 0 };
-    let magic = cursor.take(4)?;
-    if magic != b"GGUF" {
-        return Err(image("gguf magic is invalid"));
-    }
-    let version = cursor.u32()?;
-    if version != GGUF_VERSION {
-        return Err(image("gguf version is not 3"));
-    }
-    let tensor_count = cursor.u64()?;
-    let kv_count = cursor.u64()?;
-    if kv_count > MAX_GGUF_METADATA as u64 {
-        return Err(image("gguf metadata count exceeds its limit"));
-    }
-    if tensor_count > MAX_GGUF_TENSORS as u64 {
-        return Err(image("gguf tensor count exceeds its limit"));
-    }
-    if kv_count > cursor.remaining() as u64 || tensor_count > cursor.remaining() as u64 {
+    let prefix = read_gguf_prefix(bytes)?;
+    let mut cursor = Cursor {
+        bytes,
+        pos: prefix.pos,
+    };
+    let tensor_count = prefix.tensor_count;
+    let metadata = prefix.metadata;
+    if tensor_count > cursor.remaining() as u64 {
         return Err(image("gguf file is truncated"));
     }
-    let mut metadata = Vec::with_capacity(usize::try_from(kv_count).unwrap_or(0));
-    let mut seen_keys = BTreeSet::new();
-    for _ in 0..kv_count {
-        let key = cursor.string(MAX_KEY_BYTES)?;
-        validate_key(&key)?;
-        if !seen_keys.insert(key.clone()) {
-            return Err(image("duplicate gguf metadata key"));
-        }
-        let value_type = GgufValueType::from_u32(cursor.u32()?)?;
-        let value = cursor.value(value_type, 0)?;
-        metadata.push(GgufMetadata { key, value });
-    }
-    validate_metadata(&metadata)?;
 
     let mut infos = Vec::with_capacity(usize::try_from(tensor_count).unwrap_or(0));
     let mut seen_names = BTreeSet::new();
@@ -519,7 +644,7 @@ fn parse_gguf_bytes_max(
     }
     check_data_padding(data, &ranges)?;
     Ok(GgufFile {
-        version,
+        version: GGUF_VERSION,
         alignment: facts.alignment,
         architecture: facts.architecture,
         quantization_version: facts.quantization_version,
@@ -633,6 +758,8 @@ pub fn knolo_precision(tensor_type: GgufTensorType) -> &'static str {
 pub struct GgufWeightRead {
     pub tensors: Vec<crate::safetensors::TensorBytes>,
     pub metadata: Vec<GgufMetadata>,
+    /// Positive per-pair divisors from `rope_freqs.weight`. Empty when the file has none.
+    pub rope_freq_factors: Vec<f32>,
 }
 
 /// Read GGUF tensor payloads after the file digest matches the model image.
@@ -661,7 +788,12 @@ pub fn read_llama_gguf(
     image: &infer_contracts::ModelImageV1,
     weights_dir: &Path,
 ) -> Result<GgufWeightRead, InferFailure> {
-    let largest = image.files.iter().map(|file| file.size_bytes).max().unwrap_or(0);
+    let largest = image
+        .files
+        .iter()
+        .map(|file| file.size_bytes)
+        .max()
+        .unwrap_or(0);
     read_gguf_weights(image, weights_dir, largest > MAX_GGUF_BYTES)
 }
 
@@ -681,6 +813,7 @@ fn read_gguf_weights(
     let mut views = Vec::new();
     let mut bodies = Vec::new();
     let mut metadata = Vec::new();
+    let mut rope_freq_factors = Vec::new();
     for file in &image.files {
         let path = crate::paths::resolve_inside(
             weights_dir,
@@ -695,7 +828,11 @@ fn read_gguf_weights(
         };
         metadata.extend(parsed.metadata);
         let projected = project_llama_tensors(parsed.tensors)?;
-        for tensor in projected {
+        if !projected.rope_freq_factors.is_empty() && !rope_freq_factors.is_empty() {
+            return Err(image_err("duplicate rope_freqs.weight"));
+        }
+        rope_freq_factors.extend(projected.rope_freq_factors);
+        for tensor in projected.tensors {
             views.push(crate::safetensors::TensorView {
                 name: tensor.name.clone(),
                 dtype: tensor.dtype.clone(),
@@ -711,29 +848,33 @@ fn read_gguf_weights(
     Ok(GgufWeightRead {
         tensors: bodies,
         metadata,
+        rope_freq_factors,
     })
 }
 
-/// `rope_freqs.weight` is a precomputed table. The forward computes RoPE from
-/// the metadata frequency base, so the table is not a weight.
-fn llama_tensor_skipped(name: &str) -> bool {
-    name == "rope_freqs.weight"
+struct LlamaProjection {
+    tensors: Vec<crate::safetensors::TensorBytes>,
+    rope_freq_factors: Vec<f32>,
 }
 
-/// Rewrite llama.cpp names, drop `rope_freqs.weight`, and reuse the token
-/// embedding when the file has no separate `output.weight`.
-fn project_llama_tensors(
-    tensors: Vec<GgufTensor>,
-) -> Result<Vec<crate::safetensors::TensorBytes>, InferFailure> {
+/// Rewrite llama.cpp names and reuse the token embedding when the file has
+/// no separate `output.weight`. `rope_freqs.weight` is the Llama 3 RoPE
+/// divisor table, not a matmul weight, so it stays out of the inventory.
+fn project_llama_tensors(tensors: Vec<GgufTensor>) -> Result<LlamaProjection, InferFailure> {
     let mut bodies = Vec::new();
+    let mut rope_freq_factors = Vec::new();
     for tensor in tensors {
-        if llama_tensor_skipped(&tensor.name) {
+        if tensor.name == "rope_freqs.weight" {
+            if !rope_freq_factors.is_empty() {
+                return Err(image_err("duplicate rope_freqs.weight"));
+            }
+            rope_freq_factors = rope_freq_factors_from(&tensor)?;
             continue;
         }
         let mut shape = Vec::with_capacity(tensor.shape.len());
         for dim in &tensor.shape {
-            let dim = u32::try_from(*dim)
-                .map_err(|_| image_err("gguf tensor dimension exceeds u32"))?;
+            let dim =
+                u32::try_from(*dim).map_err(|_| image_err("gguf tensor dimension exceeds u32"))?;
             shape.push(dim);
         }
         let (name, shape) = canonical_llama_tensor(&tensor.name, &shape)?;
@@ -751,12 +892,37 @@ fn project_llama_tensors(
             bodies.push(head);
         }
     }
-    Ok(bodies)
+    Ok(LlamaProjection {
+        tensors: bodies,
+        rope_freq_factors,
+    })
+}
+
+fn rope_freq_factors_from(tensor: &GgufTensor) -> Result<Vec<f32>, InferFailure> {
+    if tensor.tensor_type != GgufTensorType::F32 || tensor.shape.len() != 1 {
+        return Err(image_err("rope_freqs.weight is not an f32 vector"));
+    }
+    let count = usize::try_from(tensor.shape[0]).unwrap_or(usize::MAX);
+    if count == 0 || tensor.bytes.len() != count.saturating_mul(4) {
+        return Err(image_err("rope_freqs.weight length is invalid"));
+    }
+    let mut factors = Vec::with_capacity(count);
+    for chunk in tensor.bytes.chunks_exact(4) {
+        let factor = f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]);
+        if !factor.is_finite() || factor <= 0.0 {
+            return Err(image_err("rope frequency factor is not positive"));
+        }
+        factors.push(factor);
+    }
+    Ok(factors)
 }
 
 /// Map a llama.cpp tensor name onto a Knolo name and undo the reversed shape.
 /// A name that is already a Knolo weight is returned unchanged.
-pub fn canonical_llama_tensor(name: &str, shape: &[u32]) -> Result<(String, Vec<u32>), InferFailure> {
+pub fn canonical_llama_tensor(
+    name: &str,
+    shape: &[u32],
+) -> Result<(String, Vec<u32>), InferFailure> {
     if let Some(mapped) = map_ggml_tensor(name) {
         let mut shape = shape.to_vec();
         shape.reverse();
@@ -1160,18 +1326,23 @@ mod llama_project_tests {
     }
 
     #[test]
-    fn rope_freqs_is_dropped_and_a_missing_output_reuses_the_embedding() {
+    fn rope_freqs_stay_out_of_the_inventory_and_a_missing_output_reuses_the_embedding() {
         let projected = project_llama_tensors(vec![
             tensor("token_embd.weight", &[4, 2], &[1, 0, 0, 0]),
-            tensor("rope_freqs.weight", &[2], &[9, 0, 0, 0]),
+            tensor("rope_freqs.weight", &[2], &{
+                let mut bytes = 1.0f32.to_le_bytes().to_vec();
+                bytes.extend_from_slice(&32.0f32.to_le_bytes());
+                bytes
+            }),
         ])
         .unwrap();
-        assert_eq!(projected.len(), 2);
-        assert_eq!(projected[0].name, "embed.weight");
-        assert_eq!(projected[0].shape, vec![2, 4]);
-        assert_eq!(projected[1].name, "lm_head.weight");
-        assert_eq!(projected[1].shape, projected[0].shape);
-        assert_eq!(projected[1].bytes, projected[0].bytes);
+        assert_eq!(projected.tensors.len(), 2);
+        assert_eq!(projected.tensors[0].name, "embed.weight");
+        assert_eq!(projected.tensors[0].shape, vec![2, 4]);
+        assert_eq!(projected.tensors[1].name, "lm_head.weight");
+        assert_eq!(projected.tensors[1].shape, projected.tensors[0].shape);
+        assert_eq!(projected.tensors[1].bytes, projected.tensors[0].bytes);
+        assert_eq!(projected.rope_freq_factors, vec![1.0, 32.0]);
     }
 
     #[test]
@@ -1181,8 +1352,9 @@ mod llama_project_tests {
             tensor("output.weight", &[4, 2], &[2]),
         ])
         .unwrap();
-        assert_eq!(projected.len(), 2);
-        assert_eq!(projected[1].name, "lm_head.weight");
-        assert_eq!(projected[1].bytes, vec![2]);
+        assert_eq!(projected.tensors.len(), 2);
+        assert_eq!(projected.tensors[1].name, "lm_head.weight");
+        assert_eq!(projected.tensors[1].bytes, vec![2]);
+        assert!(projected.rope_freq_factors.is_empty());
     }
 }

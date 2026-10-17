@@ -1,8 +1,21 @@
 # Knolo Infer
 
-Knolo Infer is a first-party inference runtime. The native engine loads verified weights, compiles a pinned prompt and placement plan, runs prefill and decode itself, and emits a receipt that binds the model bytes, prompt tokens, engine build, placement, and output.
+Knolo Infer is a first-party inference runtime. The native engine loads verified weights, compiles a pinned prompt and placement plan, runs prefill and decode itself, and emits a receipt that binds the model bytes, prompt tokens, engine build, placement, and output. It does not wrap llama.cpp, Ollama, or another model server.
 
-The architecture baseline is [KNOLO_INFER_NATIVE_ENGINE_FINAL_DESIGN.md](KNOLO_INFER_NATIVE_ENGINE_FINAL_DESIGN.md). This repository implements that design. It does not wrap llama.cpp, Ollama, or another model server.
+The runnable models are the checked-in catalog, `catalog/library.json`. `knolo-infer library` reads that file. Adding a row is a reviewed edit. The rule is [docs/LIBRARY.md](docs/LIBRARY.md).
+
+## Limits
+
+- The curl install is Linux x86_64. `v0.1.0` carries `knolo-infer-linux-x86_64.tar.gz` and `knolo-infer-linux-x86_64-cuda.tar.gz`. The workflow builds only the CPU archive. A maintainer machine builds the CUDA archive with `cargo build --release --locked --features cuda -p infer-cli -p infer-serve` and attaches it after that upload. `SHA256SUMS` names the extracted binaries `cpu/knolo-infer`, `cpu/knolo-infer-worker`, `cuda/knolo-infer`, and `cuda/knolo-infer-worker`. When `nvidia-smi` is on `PATH` and the CUDA archive is in the release, the installer uses it. That binary loads CUDA 12.2 libraries at run time: cuBLAS, the CUDA runtime, and nvRTC. A driver without those libraries cannot run it. If the file is missing, the installer prints that and installs the CPU archive. From a checkout, `cargo install --features cuda` builds the same CUDA programs. The default binary stays on CPU.
+- When `amd-smi`, `rocm-smi`, or `npu-smi` is on `PATH` and `nvidia-smi` is not, the installer still uses the CPU archive and prints that the ROCm or Ascend archive is not published. A detected AMD or Huawei device is not treated as NVIDIA. Those kernels are not compiled in.
+- The runnable shelf is four Llama 3.2 `Q4_K_M` rows: `llama-3.2-1b-instruct`, `llama-3.2-1b-uncensored`, `llama-3.2-3b-instruct`, and `llama-3.2-3b-uncensored`. The 2026 rows are `not_supported`. `pull` refuses them before any download.
+- The context reservation is at most 8192 tokens.
+- `knolo-infer serve` stops generation on the GGUF `tokenizer.ggml.eos_token_id`. An end-of-sequence id on the model image wins when it is set.
+- The OpenAI route ignores unused keys, including `stop`, `tools`, and penalty fields. The native route still refuses unknown fields.
+- `run --prompt` is one user message. The terminal loop keeps the model loaded and sends the earlier turns. A line that does not fit is not kept.
+- A quantized token embedding stays packed. The lookup dequantizes the selected row. A dense `f32`, `f16`, or `bf16` embedding stays dense. Other quantized matrices stay packed.
+- No phone build is shipped.
+- Workspace crates stay `publish = false`.
 
 ## What is implemented
 
@@ -39,7 +52,10 @@ The tiny Llama fixture:
 - `verify`, `pin`, `pull`, `plan`, `run`, and `serve --model daily` accept that image the same way they accept the micro-model
 - a `format: gguf` manifest compiles for `knolo.llama.v1` when every tensor is one of `f32`, `f16`, `q8_0`, `q4_k_m`, `q5_k_m`, or `q6_k`. A micro manifest with `format: gguf` stays `MODEL_IMAGE_INVALID`
 - greedy token ids match the f32 oracle, and logits agree within absolute tolerance `1e-4`
+- a CUDA build places a wider `knolo.llama.v1` GGUF, including the catalog `Q4_K_M` rows, on `slot-0`. Quantized matrices stay packed, and the KV cache and attention for the reserved context stay on the device. The default build stays on CPU
 - a pinned run accepts `--knowledge-image`, `--query-receipt`, `--reflex-receipt`, and `--sign-key`. `receipt verify` on a copy of the image, weights, lock, receipt, and public key checks the signature, the artifact root, and the knowledge binding
+
+A phone build is not shipped yet; [docs/MOBILE.md](docs/MOBILE.md) describes the in-process CPU ABI a React Native module will call for this llama-tiny fixture.
 
 Prompt, sampler, and receipts:
 
@@ -78,7 +94,8 @@ Native stream and OpenAI chat subset:
 
 - `stream: true` on `POST /knolo/infer/v1/complete` sends `knolo.accepted`, one `knolo.delta` per output token, and `knolo.usage`
 - `GET /v1/models` and `POST /v1/chat/completions` accept the served alias, fixed-point `temperature` and `top_p`, and `stream`
-- unknown fields are refused, and a non-zero temperature still requires a seed
+- unused keys are ignored, including keys inside a message. `n` other than 1 fails. The native route still refuses unknown fields, and a non-zero temperature still requires a seed
+- a GGUF pin stops on `tokenizer.ggml.eos_token_id`. An end-of-sequence id recorded on the model image wins when it is set
 - `X-Knolo-Receipt` was `absent` until the serve-path journal below
 
 Serve-path receipt journal:
@@ -276,7 +293,7 @@ This machine can prove the CPU path. `cargo test --workspace` does not enable CU
 
 ## Install
 
-The published archive is the CPU build. It contains `knolo-infer` and `knolo-infer-worker`. A CUDA build is not what the installer selects.
+`v0.1.0` carries two Linux x86_64 archives. Each one contains `knolo-infer` and `knolo-infer-worker`. The release workflow builds `knolo-infer-linux-x86_64.tar.gz` only. `ubuntu-latest` has no CUDA toolkit. A maintainer machine builds the second archive with `cargo build --release --locked --features cuda -p infer-cli -p infer-serve` and attaches `knolo-infer-linux-x86_64-cuda.tar.gz` after the workflow upload. `SHA256SUMS` lists each archive by its file name. The extracted CPU binaries are `cpu/knolo-infer` and `cpu/knolo-infer-worker`. The extracted CUDA binaries are `cuda/knolo-infer` and `cuda/knolo-infer-worker`. When `nvidia-smi` is on `PATH` and the CUDA archive is in the release, the installer uses it. That binary loads CUDA 12.2 libraries at run time: cuBLAS, the CUDA runtime, and nvRTC. A driver without those libraries cannot run it. If the file is missing, the installer prints that and installs the CPU archive. From a checkout, pass `--features cuda` to the `cargo install` commands below. When `amd-smi`, `rocm-smi`, or `npu-smi` is on `PATH` and `nvidia-smi` is not, the script still installs the CPU archive and prints that the ROCm or Ascend archive is not published.
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/HiveForensics-AI/knolo-inference/main/scripts/install.sh | bash
@@ -305,11 +322,11 @@ knolo-infer run llama-3.2-1b-instruct
 knolo-infer serve --model llama-3.2-1b-instruct
 ```
 
-The runnable rows are Llama 3.2 1B Instruct, one public Llama 3.2 1B uncensored model, and Llama 3.2 3B Instruct, each at `Q4_K_M`. Qwen rows are listed and `pull` refuses them before any download. Real Llama weights run on CPU. The context reservation is at most 2048 tokens. The chat template has system, user, and assistant turns, and it has no tools and no images.
+The runnable rows are Llama 3.2 1B Instruct, Llama 3.2 3B Instruct, and the public 1B and 3B uncensored models, each at `Q4_K_M`. `library --tag new` lists Nemotron 3.5 Bolt, Granite 4.2 3B, Qwen3.8 27B, Gemma 4 12B, and Muse Glimmer 30B, and `pull` refuses each one before any download. Real Llama weights run on CPU. The context reservation is at most 8192 tokens. A reservation whose device bytes exceed probed available memory is refused before the forward. The chat template has system, user, and assistant turns, and it has no tools and no images.
 
 `pull` prints the license and waits for `y` unless `--yes` is set. Without a terminal it refuses until `--yes` is set. Files land in `$KNOLO_INFER_HOME`, which defaults to `~/.knolo/infer`. `list` shows what is pinned there. `rm` deletes one model directory under that home and asks unless `--yes` is set.
 
-`run <name>` on a terminal reads one line at a time and writes each receipt under the home directory. `run --prompt` stays one shot. `library refresh` rereads the pinned file in each named repo and prints a changed sha256. It does not edit `catalog/library.json`. How a row is added, and which hosts a download may use, is in `docs/LIBRARY.md`.
+`run <name>` on a terminal reads one line at a time. The model stays loaded, and each line is sent with the earlier turns. Each visible token is printed as it is sampled. A line that does not fit is not kept, and earlier turns stay. It writes each receipt under the home directory. `run --prompt` is one user message. `library refresh` rereads the pinned file in each named repo and prints a changed sha256. It does not edit `catalog/library.json`. How a row is added, and which hosts a download may use, is in `docs/LIBRARY.md`. A quantized token embedding stays packed, and a dense embedding stays dense.
 
 A CUDA build needs `nvcc` on `PATH`. `CUDA_ROOT` and `CUDA_HOME` are the toolkit prefix. `LD_LIBRARY_PATH` includes that prefix's `lib` directory, which is where `libcublas` is loaded. `cudarc` reads `CUDA_ROOT`. Pass `--features cuda` to the `cargo install` commands above. The default binary does not.
 
@@ -364,6 +381,7 @@ crates/infer-native/          Candle CPU and CUDA adapters
 crates/infer-receipt/         journal, engine identity, receipt verification
 crates/infer-serve/           supervisor, worker process, loopback HTTP
 crates/infer-cli/             knolo-infer binary
+crates/infer-ffi/             in-process C ABI for the llama-tiny fixture
 packages/infer/               @knolo/infer verifier
 conformance/contracts/        shared golden vectors
 conformance/model-image/      authoring fixture and generated .kmodel

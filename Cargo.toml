@@ -9,6 +9,7 @@ members = [
     "crates/infer-receipt",
     "crates/infer-serve",
     "crates/infer-cli",
+    "crates/infer-ffi",
 ]
 
 [workspace.package]

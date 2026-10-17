@@ -1544,7 +1544,8 @@ fn assemble_plan(
     let mut trace = inner
         .trace
         .begin(&draft.request_id, draft.class, draft.stream);
-    let sampler = match build_sampler(&inner.pinned.image, draft.generation) {
+    let sampler = match build_sampler(&inner.pinned.image, draft.generation, inner.pinned.gguf_eos)
+    {
         Ok(sampler) => sampler,
         Err(err) => {
             trace.finish(duration_outcome(err.code), Some(err.code), None);

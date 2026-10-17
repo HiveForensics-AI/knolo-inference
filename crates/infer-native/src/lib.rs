@@ -5,6 +5,8 @@
 //! does not start a server.
 
 mod candle_micro;
+#[cfg(feature = "cuda")]
+mod cuda_llama;
 
 #[cfg(feature = "cuda")]
 pub use candle_micro::CandleCudaBackend;

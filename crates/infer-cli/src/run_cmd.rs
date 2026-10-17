@@ -11,9 +11,11 @@ use infer_artifact::{
 };
 use infer_contracts::{evidence_from_text, fail, ErrorCode, InferFailure};
 use infer_engine::load_verified_model;
+use infer_prompt::decode_tokens;
 use infer_receipt::{
     default_home, replay_pinned, run_pinned, verify_receipt_bytes, verify_receipt_evidence,
-    verify_receipt_journal, verify_receipt_key, verify_receipt_model, ReplayOptions, RunOptions,
+    verify_receipt_journal, verify_receipt_key, verify_receipt_model, ChatSession, ReplayOptions,
+    RunOptions,
 };
 
 use crate::Flags;
@@ -277,6 +279,23 @@ fn chat_loop(flags: &Flags, alias: &str) -> Result<(), InferFailure> {
         Some(path) => Some(load_ed25519_seed(path)?),
         None => None,
     };
+    let options = RunOptions {
+        alias: alias.to_string(),
+        prompt: String::new(),
+        mode: "pinned".to_string(),
+        lock_path: lock,
+        home: home.clone(),
+        weights_dir: flags.weights.clone(),
+        max_output_tokens: flags.max_tokens,
+        temperature_micros: flags.temperature_micros,
+        seed: flags.seed,
+        stream: None,
+        evidence,
+        signing_key,
+    };
+    let mut session = ChatSession::open(&options)?;
+    let tokenizer = session.tokenizer()?;
+    let eos = session.eos_token_ids();
     eprintln!("model {alias}. An empty line or q exits.");
     let mut index = 1u32;
     loop {
@@ -297,20 +316,32 @@ fn chat_loop(flags: &Flags, alias: &str) -> Result<(), InferFailure> {
             return Ok(());
         }
         let receipt_path = chats.join(format!("{index}.cbor"));
-        let output = run_pinned(&RunOptions {
-            alias: alias.to_string(),
-            prompt: prompt.to_string(),
-            mode: "pinned".to_string(),
-            lock_path: lock.clone(),
-            home: home.clone(),
-            weights_dir: flags.weights.clone(),
-            max_output_tokens: flags.max_tokens,
-            temperature_micros: flags.temperature_micros,
-            seed: flags.seed,
-            stream: None,
-            evidence: evidence.clone(),
-            signing_key,
-        })?;
+        let mut printed = false;
+        let turned = if flags.json {
+            session.turn(&options, prompt, &mut |_| {})
+        } else {
+            session.turn(&options, prompt, &mut |id| {
+                if eos.contains(&id) {
+                    return;
+                }
+                let Ok(piece) = decode_tokens(&tokenizer, &[id]) else {
+                    return;
+                };
+                print!("{piece}");
+                let _ = io::stdout().flush();
+                printed = true;
+            })
+        };
+        let output = match turned {
+            Ok(output) => output,
+            Err(err) => {
+                if printed {
+                    println!();
+                }
+                eprintln!("knolo-infer: {err}");
+                continue;
+            }
+        };
         write_atomic(
             &receipt_path,
             &output.receipt_bytes,
@@ -328,7 +359,7 @@ fn chat_loop(flags: &Flags, alias: &str) -> Result<(), InferFailure> {
                 .expect("chat json")
             );
         } else {
-            println!("{}", output.output_text);
+            println!();
         }
         index = index.saturating_add(1);
     }

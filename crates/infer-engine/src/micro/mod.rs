@@ -22,7 +22,9 @@ pub use weights::{
     MAX_CONTEXT, MIN_GREEDY_MARGIN, RMS_EPS, ROPE_THETA, SYNTHETIC_SEED, VOCAB,
 };
 
-pub(crate) use math::{add_residual, gemv, rmsnorm, rope, silu, softmax};
+pub(crate) use math::{
+    add_residual, gemv, rmsnorm, rope, rope_consecutive_with_factors, silu, softmax,
+};
 
 use crate::traits::{ArchitectureAdapter, KvLayout, VerifiedWeightSource};
 
@@ -188,6 +190,7 @@ pub fn load_verified_micro(
         weight_bytes,
         llama: None,
         llama_tensors: None,
+        gguf_eos: None,
     })
 }
 

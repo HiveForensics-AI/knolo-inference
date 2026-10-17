@@ -1,8 +1,8 @@
 //! `knolo.llama.v1`: a two-layer transformer with a 32-token vocabulary.
 //! Hidden size, heads, and the KV block match the micro fixture so the
 //! existing page pool holds the cache. Weights may be stored as safetensors
-//! f32, f16, or bf16, or as one allowlisted GGUF precision, and are decoded
-//! to f32 before the forward.
+//! f32, f16, or bf16, or as one allowlisted GGUF precision. Dense weights are
+//! decoded to f32 before the forward. A quantized token embedding stays packed.
 
 mod forward;
 mod inventory;
@@ -31,7 +31,8 @@ pub use synthetic::{
     TOKENIZER_JSON as LLAMA_TOKENIZER_JSON,
 };
 pub use weights::{
-    ADAPTER_ID as LLAMA_ADAPTER_ID, BLOCK_SIZE as LLAMA_BLOCK_SIZE, VOCAB as LLAMA_VOCAB,
+    dequant_packed_row, ADAPTER_ID as LLAMA_ADAPTER_ID, BLOCK_SIZE as LLAMA_BLOCK_SIZE,
+    VOCAB as LLAMA_VOCAB,
 };
 
 static LLAMA_ADAPTER: LlamaAdapter = LlamaAdapter;
@@ -253,11 +254,15 @@ fn load_verified_llama_image(
     verification: infer_artifact::Verification,
 ) -> Result<VerifiedWeightSource, InferFailure> {
     validate_llama_image(&verification.image)?;
-    let (mut tensors, metadata) = if verification.image.format == "gguf" {
+    let (mut tensors, metadata, rope_freq_factors) = if verification.image.format == "gguf" {
         let read = read_llama_gguf(&verification.image, weights_dir)?;
-        (read.tensors, read.metadata)
+        (read.tensors, read.metadata, read.rope_freq_factors)
     } else {
-        (read_verified_tensors(&verification.image, weights_dir)?, Vec::new())
+        (
+            read_verified_tensors(&verification.image, weights_dir)?,
+            Vec::new(),
+            Vec::new(),
+        )
     };
     let toy = is_toy_inventory(&verification.image);
     let (weights, llama, llama_tensors) = if toy {
@@ -271,22 +276,30 @@ fn load_verified_llama_image(
             ));
         }
         let partial = inventory::parse_inventory(&verification.image.tensor_inventory)?;
-        let shape = inventory::shape_from_metadata(&partial, &metadata)?;
+        let mut shape = inventory::shape_from_metadata(&partial, &metadata)?;
         if let Some(declared) = prompt_context_extension(&verification.image)? {
-            if declared != shape.context {
+            // The catalog stamp is the reservation. It may be a smaller
+            // multiple of 16 than the file cap, which is what an image pinned
+            // at the old cap still says. A stamp above the cap does not load.
+            if declared > shape.context
+                || declared < weights::BLOCK_SIZE
+                || declared % weights::BLOCK_SIZE != 0
+            {
                 return Err(fail(
                     ErrorCode::ModelImageInvalid,
                     "knolo.llama.context does not match the GGUF context reservation",
                 ));
             }
+            shape.context = declared;
         }
-        let decoded = weights::decode_wide_tensors(&tensors, &shape)?;
+        let decoded = weights::decode_wide_tensors(&tensors, &shape, rope_freq_factors)?;
         for tensor in &mut tensors {
             tensor.bytes.clear();
             tensor.bytes.shrink_to_fit();
         }
         (empty_weights(), Some(shape), Some(decoded))
     };
+    let gguf_eos = inventory::meta_u32(&metadata, "tokenizer.ggml.eos_token_id")?;
     let mut weight_bytes = 0u64;
     for file in &verification.image.files {
         weight_bytes = weight_bytes
@@ -303,6 +316,7 @@ fn load_verified_llama_image(
         weight_bytes,
         llama,
         llama_tensors,
+        gguf_eos,
     })
 }
 
@@ -350,10 +364,7 @@ pub fn llama_cuda_placement(
     source: &VerifiedWeightSource,
 ) -> Result<PlacementPlanV1, InferFailure> {
     if source.llama.is_some_and(|shape| !shape.is_toy()) {
-        return Err(fail(
-            ErrorCode::UnsupportedKernel,
-            "knolo.llama.v1 above the llama-tiny fixture has no CUDA kernel",
-        ));
+        return wide_placement(source, "slot-0");
     }
     let storage = storage_of(source)?;
     llama_placement_bytes(
@@ -384,7 +395,8 @@ fn wide_placement(
         block_size: shape.block_size(),
         dtype: "f32",
     };
-    let kv = crate::memory::planned_kv_bytes_within(&layout, shape.page_count(), RUN_KV_POOL_BYTES)?;
+    let kv =
+        crate::memory::planned_kv_bytes_within(&layout, shape.page_count(), RUN_KV_POOL_BYTES)?;
     let total = source
         .weight_bytes
         .checked_add(kv)
@@ -626,10 +638,10 @@ fn accept_wide_placement(
         ));
     }
     let device = placement.devices.first().map(String::as_str).unwrap_or("");
-    if placement.devices.len() != 1 || device != "cpu" {
+    if placement.devices.len() != 1 || (device != "cpu" && device != "slot-0") {
         return Err(fail(
-            ErrorCode::UnsupportedKernel,
-            "knolo.llama.v1 above the llama-tiny fixture has no CUDA kernel",
+            ErrorCode::PlacementUnsatisfiable,
+            "knolo.llama.v1 runs on cpu or slot-0",
         ));
     }
     if placement.model_runtime_root != source.runtime_root {

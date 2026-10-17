@@ -413,7 +413,10 @@ pub use grouped_kernel::{
     measure_grouped_kernel, verify_grouped_kernel, write_grouped_kernel_report,
     GroupedKernelObservation, MicroGroupedKernel,
 };
-pub use hardware::{default_home, probe_machine, require_cuda_slot0, CudaSlot0};
+pub use hardware::{
+    admit_placement_memory, admit_probed_placement, default_home, first_accelerator_memory,
+    probe_machine, probed_available_bytes, require_cuda_slot0, AcceleratorMemory, CudaSlot0,
+};
 pub use host_key::{
     measure_host_key, verify_host_key, write_host_key_report, HostKeyObservation, MicroHostKey,
 };
@@ -453,13 +456,14 @@ pub use latency::{
 pub use linear::{
     measure_linear, verify_linear, write_linear_report, LinearObservation, MicroLinear,
 };
+pub use llama::dequant_packed_row;
 pub use llama::{
     accept_llama_placement, adapter_vocab, llama_cpu_placement, llama_cuda_placement,
     llama_declared_storage, llama_kv_layout, llama_placement_bytes, load_verified_llama,
     load_verified_model, open_paged_kv, prompt_bounds, render_llama_conformance, write_llama_gguf,
     write_llama_model, write_llama_precision, LlamaAdapter, LlamaModelFiles, LlamaOracle,
-    LLAMA_ADAPTER_ID,
-    LLAMA_BLOCK_SIZE, LLAMA_FIXTURE_CASES, LLAMA_TEMPLATE_JINJA, LLAMA_TOKENIZER_JSON, LLAMA_VOCAB,
+    LLAMA_ADAPTER_ID, LLAMA_BLOCK_SIZE, LLAMA_FIXTURE_CASES, LLAMA_TEMPLATE_JINJA,
+    LLAMA_TOKENIZER_JSON, LLAMA_VOCAB,
 };
 pub use llama_shape::{LlamaShape, LlamaTensors, PackedTensor, RUN_KV_POOL_BYTES};
 pub use load::{
@@ -604,7 +608,7 @@ pub use safe_error::{
     measure_safe_error, verify_safe_error, write_safe_error_report, MicroSafeError,
     SafeErrorObservation,
 };
-pub use sample::{generate_samples, sample_token, SampledOutput};
+pub use sample::{generate_samples, generate_samples_with, sample_token, SampledOutput};
 pub use sandbox::{
     measure_sandbox_profile, verify_sandbox_profile, write_sandbox_report, MicroSandbox,
     SandboxObservation,

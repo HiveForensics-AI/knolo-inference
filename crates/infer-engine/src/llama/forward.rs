@@ -1,12 +1,15 @@
 //! CPU forward for a Llama wider than the llama-tiny fixture.
 //!
 //! Quantized matrices stay in their GGUF payload and use `quant_gemm`.
-//! Dense tensors are f32. The toy fixture does not call this path.
+//! A quantized token embedding stays packed. The lookup dequantizes that row.
+//! Dense `f32`, `f16`, and `bf16` embeddings stay a dense table.
+//! The toy fixture does not call this path.
 
 use infer_contracts::{fail, ErrorCode, InferFailure};
 
+use crate::llama::dequant_packed_row;
 use crate::llama_shape::{LlamaShape, LlamaTensors};
-use crate::micro::{add_residual, gemv, rmsnorm, rope, silu, softmax};
+use crate::micro::{add_residual, gemv, rmsnorm, rope_consecutive_with_factors, silu, softmax};
 use crate::quant_gemm::quant_gemm;
 use crate::traits::KvStore;
 
@@ -29,7 +32,7 @@ pub(crate) fn wide_step(
         ));
     }
     let position = kv.token_len(sequence)?;
-    let mut hidden = row(&wide.tensors, "embed.weight", shape.hidden, token as usize)?.to_vec();
+    let mut hidden = embed_row(&wide.tensors, token as usize, shape.hidden)?;
     let kv_width = shape.kv_heads * shape.head_dim;
     for layer in 0..shape.layers {
         let prefix = format!("layers.{layer}");
@@ -61,18 +64,20 @@ pub(crate) fn wide_step(
         )?;
         for head in 0..shape.heads {
             let start = head * shape.head_dim;
-            rope(
+            rope_consecutive_with_factors(
                 &mut q[start..start + shape.head_dim],
                 position,
                 shape.rope_theta,
+                &wide.tensors.rope_freq_factors,
             )?;
         }
         for head in 0..shape.kv_heads {
             let start = head * shape.head_dim;
-            rope(
+            rope_consecutive_with_factors(
                 &mut k[start..start + shape.head_dim],
                 position,
                 shape.rope_theta,
+                &wide.tensors.rope_freq_factors,
             )?;
         }
         let layer_id = u32::try_from(layer).expect("layer index fits u32");
@@ -197,14 +202,7 @@ fn apply(
                 format!("tensor {name} does not match knolo.llama.v1"),
             ));
         }
-        return quant_gemm(
-            packed.tensor_type,
-            &packed.bytes,
-            rows,
-            cols,
-            x,
-            1,
-        );
+        return quant_gemm(packed.tensor_type, &packed.bytes, rows, cols, x, 1);
     }
     gemv(dense(tensors, name)?, rows, cols, x)
 }
@@ -216,6 +214,23 @@ fn dense<'a>(tensors: &'a LlamaTensors, name: &str) -> Result<&'a [f32], InferFa
             format!("missing tensor {name}"),
         )
     })
+}
+
+fn embed_row(tensors: &LlamaTensors, index: usize, cols: usize) -> Result<Vec<f32>, InferFailure> {
+    if let Some(packed) = tensors
+        .packed
+        .iter()
+        .find(|tensor| tensor.name == "embed.weight")
+    {
+        if packed.cols != cols {
+            return Err(fail(
+                ErrorCode::ModelImageInvalid,
+                "tensor embed.weight does not match knolo.llama.v1",
+            ));
+        }
+        return dequant_packed_row(packed, index);
+    }
+    Ok(row(tensors, "embed.weight", cols, index)?.to_vec())
 }
 
 fn row<'a>(

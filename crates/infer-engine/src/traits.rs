@@ -19,6 +19,9 @@ pub struct VerifiedWeightSource {
     pub llama: Option<LlamaShape>,
     /// Set when the Llama inventory is wider than the toy fixture.
     pub llama_tensors: Option<LlamaTensors>,
+    /// `tokenizer.ggml.eos_token_id` from a GGUF file. Used when the image
+    /// does not record `specialTokens.eos`.
+    pub gguf_eos: Option<u32>,
 }
 
 pub type EngineError = InferFailure;

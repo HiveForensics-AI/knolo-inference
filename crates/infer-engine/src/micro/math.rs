@@ -65,6 +65,22 @@ pub(crate) fn rmsnorm(x: &[f32], weight: &[f32], eps: f32) -> Result<Vec<f32>, I
 /// Llama rotate-half RoPE. `theta` is the fixed base, 10000 for this model.
 /// Pair `i` uses `angle = position * theta^(-2i / dim)`.
 pub(crate) fn rope(head: &mut [f32], position: u32, theta: f32) -> Result<(), InferFailure> {
+    rope_with_factors(head, position, theta, &[])
+}
+
+/// Same rotate-half RoPE, with one positive divisor per pair.
+///
+/// Llama 3 stores those divisors in `rope_freqs.weight`. An empty slice is
+/// the unscaled base. Pair `i` uses `angle = position * theta^(-2i / dim) / factor`.
+/// The llama-tiny fixture uses this layout. A llama.cpp GGUF does not: its Q
+/// and K rows are permuted for consecutive pairs, so the wide forward calls
+/// [`rope_consecutive_with_factors`].
+pub(crate) fn rope_with_factors(
+    head: &mut [f32],
+    position: u32,
+    theta: f32,
+    factors: &[f32],
+) -> Result<(), InferFailure> {
     if head.is_empty() || head.len() % 2 != 0 {
         return Err(fail(
             ErrorCode::ContractInvalid,
@@ -72,9 +88,25 @@ pub(crate) fn rope(head: &mut [f32], position: u32, theta: f32) -> Result<(), In
         ));
     }
     let half = head.len() / 2;
+    if !factors.is_empty() && factors.len() != half {
+        return Err(fail(
+            ErrorCode::ModelImageInvalid,
+            "rope frequency factors do not match the head dimension",
+        ));
+    }
     let dim = head.len() as f32;
     for i in 0..half {
-        let inv = theta.powf(-((2 * i) as f32) / dim);
+        let mut inv = theta.powf(-((2 * i) as f32) / dim);
+        if !factors.is_empty() {
+            let factor = factors[i];
+            if !factor.is_finite() || factor <= 0.0 {
+                return Err(fail(
+                    ErrorCode::ModelImageInvalid,
+                    "rope frequency factor is not positive",
+                ));
+            }
+            inv /= factor;
+        }
         let angle = position as f32 * inv;
         let (sin, cos) = angle.sin_cos();
         let x1 = head[i];
@@ -82,6 +114,57 @@ pub(crate) fn rope(head: &mut [f32], position: u32, theta: f32) -> Result<(), In
         head[i] = x1 * cos - x2 * sin;
         head[half + i] = x2 * cos + x1 * sin;
         if !head[i].is_finite() || !head[half + i].is_finite() {
+            return Err(non_finite("rope"));
+        }
+    }
+    Ok(())
+}
+
+/// llama.cpp `LLAMA_ROPE_TYPE_NORM`: rotate adjacent values, not the two halves.
+///
+/// GGUF Llama stores Q and K in that order. Pair `i` is `(head[2i], head[2i+1])`
+/// and uses the same angle as rotate-half pair `i`.
+pub(crate) fn rope_consecutive_with_factors(
+    head: &mut [f32],
+    position: u32,
+    theta: f32,
+    factors: &[f32],
+) -> Result<(), InferFailure> {
+    if head.is_empty() || head.len() % 2 != 0 {
+        return Err(fail(
+            ErrorCode::ContractInvalid,
+            "rope head dimension must be even",
+        ));
+    }
+    let half = head.len() / 2;
+    if !factors.is_empty() && factors.len() != half {
+        return Err(fail(
+            ErrorCode::ModelImageInvalid,
+            "rope frequency factors do not match the head dimension",
+        ));
+    }
+    let dim = head.len() as f32;
+    for i in 0..half {
+        let mut inv = theta.powf(-((2 * i) as f32) / dim);
+        if !factors.is_empty() {
+            let factor = factors[i];
+            if !factor.is_finite() || factor <= 0.0 {
+                return Err(fail(
+                    ErrorCode::ModelImageInvalid,
+                    "rope frequency factor is not positive",
+                ));
+            }
+            inv /= factor;
+        }
+        let angle = position as f32 * inv;
+        let (sin, cos) = angle.sin_cos();
+        let left = 2 * i;
+        let right = left + 1;
+        let x0 = head[left];
+        let x1 = head[right];
+        head[left] = x0 * cos - x1 * sin;
+        head[right] = x1 * cos + x0 * sin;
+        if !head[left].is_finite() || !head[right].is_finite() {
             return Err(non_finite("rope"));
         }
     }
@@ -150,6 +233,50 @@ mod tests {
         let original = head.clone();
         rope(&mut head, 0, 10_000.0).unwrap();
         assert_eq!(head, original);
+    }
+
+    #[test]
+    fn rope_frequency_factor_divides_the_inverse_frequency() {
+        let start = vec![1.0f32, 0.0, 0.0, 1.0];
+        let mut plain = start.clone();
+        rope(&mut plain, 2, 10_000.0).unwrap();
+        let mut scaled = start.clone();
+        rope_with_factors(&mut scaled, 2, 10_000.0, &[2.0, 2.0]).unwrap();
+        let mut earlier = start.clone();
+        rope(&mut earlier, 1, 10_000.0).unwrap();
+        for (scaled, earlier) in scaled.iter().zip(&earlier) {
+            assert!((scaled - earlier).abs() < 1e-5);
+        }
+        assert!((scaled_distance(&plain, &earlier)) > 1e-3);
+    }
+
+    #[test]
+    fn consecutive_rope_rotates_adjacent_pairs() {
+        let mut head = vec![1.0f32, 0.0, 1.0, 0.0];
+        rope_consecutive_with_factors(&mut head, 1, 10_000.0, &[]).unwrap();
+        let (sin0, cos0) = 1.0f32.sin_cos();
+        assert!((head[0] - cos0).abs() < 1e-5);
+        assert!((head[1] - sin0).abs() < 1e-5);
+        let angle1 = 10_000f32.powf(-0.5);
+        let (sin1, cos1) = angle1.sin_cos();
+        assert!((head[2] - cos1).abs() < 1e-5);
+        assert!((head[3] - sin1).abs() < 1e-5);
+
+        let start = vec![1.0f32, 0.0, 0.0, 1.0];
+        let mut scaled = start.clone();
+        rope_consecutive_with_factors(&mut scaled, 2, 10_000.0, &[2.0, 2.0]).unwrap();
+        let mut earlier = start.clone();
+        rope_consecutive_with_factors(&mut earlier, 1, 10_000.0, &[]).unwrap();
+        for (scaled, earlier) in scaled.iter().zip(&earlier) {
+            assert!((scaled - earlier).abs() < 1e-5);
+        }
+    }
+
+    fn scaled_distance(left: &[f32], right: &[f32]) -> f32 {
+        left.iter()
+            .zip(right)
+            .map(|(left, right)| (left - right).abs())
+            .fold(0.0, f32::max)
     }
 
     #[test]

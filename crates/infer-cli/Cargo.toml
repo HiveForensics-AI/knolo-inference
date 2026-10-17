@@ -18,6 +18,7 @@ cuda = ["infer-receipt/cuda", "infer-serve/cuda"]
 infer-artifact = { path = "../infer-artifact" }
 infer-contracts = { path = "../infer-contracts" }
 infer-engine = { path = "../infer-engine" }
+infer-prompt = { path = "../infer-prompt" }
 infer-receipt = { path = "../infer-receipt" }
 infer-serve = { path = "../infer-serve" }
 serde_json = "1"

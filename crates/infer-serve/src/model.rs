@@ -1,13 +1,14 @@
 //! Pinned model image and the sampler plan for one completion.
 //!
-//! The supervisor reads the image and does not open weight bytes. The worker
-//! opens the weights after the image roots match the lockfile.
+//! The supervisor reads the image. For a GGUF pin it also reads
+//! `tokenizer.ggml.eos_token_id` from the metadata and does not copy tensor
+//! payloads. The worker opens the weights after the image roots match the lockfile.
 
 use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use infer_artifact::{read_lockfile, resolve_lock_relative, verify_image};
+use infer_artifact::{gguf_eos_token_id, read_lockfile, resolve_lock_relative, verify_image};
 use infer_contracts::{
     fail, DigestHex, ErrorCode, FixedPointSamplerV1, InferFailure, ModelImageV1, SamplerPlanV1,
 };
@@ -52,6 +53,8 @@ pub struct PinnedModel {
     pub weight_bytes: u64,
     pub kmodel: PathBuf,
     pub weights: PathBuf,
+    /// `tokenizer.ggml.eos_token_id` when the image does not record eos.
+    pub gguf_eos: Option<u32>,
 }
 
 pub fn resolve_pin(
@@ -104,6 +107,7 @@ pub fn resolve_pin(
             .checked_add(file.size_bytes)
             .ok_or_else(|| fail(ErrorCode::ModelImageInvalid, "weight byte total overflows"))?;
     }
+    let gguf_eos = gguf_eos_token_id(&verification.image, &weights)?;
     Ok(PinnedModel {
         image: verification.image,
         image_root: verification.image_root,
@@ -112,12 +116,14 @@ pub fn resolve_pin(
         weight_bytes,
         kmodel,
         weights,
+        gguf_eos,
     })
 }
 
 pub fn build_sampler(
     image: &ModelImageV1,
     generation: &GenerationRequest,
+    gguf_eos: Option<u32>,
 ) -> Result<SamplerPlanV1, InferFailure> {
     let mut settings: FixedPointSamplerV1 = image.generation_defaults.clone();
     apply(
@@ -158,7 +164,7 @@ pub fn build_sampler(
         ));
     }
     let mut eos = Vec::new();
-    if let Some(id) = image.special_tokens.eos {
+    if let Some(id) = image.special_tokens.eos.or(gguf_eos) {
         eos.push(id);
     }
     eos.sort_unstable();

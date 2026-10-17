@@ -24,19 +24,19 @@ mod verify;
 mod yaml;
 
 pub use catalog::{
-    checked_in_catalog, display_status, find_row, gpu_label, host_allowed, list_installed,
-    load_catalog, load_catalog_file, pull_catalog_row, refresh_catalog, remove_installed, Catalog,
-    CatalogRow, FetchPolicy, InstalledModel, PullOutcome, PullRequest, RefreshChange,
-    LLAMA_CHAT_TEMPLATE,
+    admit_catalog_row, checked_in_catalog, display_status, find_row, gpu_label, host_allowed,
+    list_installed, load_catalog, load_catalog_file, pull_catalog_row, refresh_catalog,
+    remove_installed, Catalog, CatalogRow, FetchPolicy, InstalledModel, PullOutcome, PullRequest,
+    RefreshChange, LLAMA_CHAT_TEMPLATE,
 };
 pub use compile::{compile_manifest, compile_manifest_capped, write_model_image, CompiledModel};
 pub use gguf::{
-    canonical_llama_tensor, encode_gguf, parse_gguf_bytes, parse_gguf_bytes_capped,
-    read_gguf_tensors, read_gguf_tensors_capped, read_llama_gguf, read_verified_gguf,
-    read_verified_gguf_capped, GgufArray, GgufFile, GgufMetadata, GgufTensor, GgufTensorDraft,
-    GgufTensorType, GgufValue, GgufValueType, GgufWeightRead, GGUF_DEFAULT_ALIGNMENT,
-    GGUF_QUANT_VERSION, GGUF_VERSION, MAX_GGUF_BYTES, RUN_MAX_GGUF_BYTES,
-    RUN_MAX_GGUF_TENSOR_BYTES,
+    canonical_llama_tensor, encode_gguf, gguf_eos_token_id, parse_gguf_bytes,
+    parse_gguf_bytes_capped, read_gguf_metadata, read_gguf_tensors, read_gguf_tensors_capped,
+    read_llama_gguf, read_verified_gguf, read_verified_gguf_capped, GgufArray, GgufFile,
+    GgufMetadata, GgufTensor, GgufTensorDraft, GgufTensorType, GgufValue, GgufValueType,
+    GgufWeightRead, GGUF_DEFAULT_ALIGNMENT, GGUF_QUANT_VERSION, GGUF_VERSION, MAX_GGUF_BYTES,
+    RUN_MAX_GGUF_BYTES, RUN_MAX_GGUF_TENSOR_BYTES,
 };
 pub use infer_contracts::{
     sha256_prefixed, DigestHex, ErrorCode, InferFailure, MAX_DOCUMENT_BYTES,

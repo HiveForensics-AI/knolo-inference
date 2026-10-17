@@ -757,25 +757,31 @@ fn bounded_token(field: &str, value: &str) -> Result<(), InferFailure> {
 }
 
 fn validate_capability(value: &str) -> Result<(), InferFailure> {
-    let Some((major, minor)) = value.split_once('.') else {
-        return Err(fail(
-            ErrorCode::ContractInvalid,
-            "compute capability must be major.minor",
-        ));
-    };
-    if major.is_empty()
-        || minor.is_empty()
-        || major.len() > 3
-        || minor.len() > 3
-        || !major.bytes().all(|b| b.is_ascii_digit())
-        || !minor.bytes().all(|b| b.is_ascii_digit())
-    {
-        return Err(fail(
-            ErrorCode::ContractInvalid,
-            "compute capability must be major.minor",
-        ));
+    if version_capability(value) || architecture_token(value) {
+        return Ok(());
     }
-    Ok(())
+    Err(fail(
+        ErrorCode::ContractInvalid,
+        "compute capability must be major.minor or an architecture token",
+    ))
+}
+
+fn version_capability(value: &str) -> bool {
+    let Some((major, minor)) = value.split_once('.') else {
+        return false;
+    };
+    !major.is_empty()
+        && !minor.is_empty()
+        && major.len() <= 3
+        && minor.len() <= 3
+        && major.bytes().all(|b| b.is_ascii_digit())
+        && minor.bytes().all(|b| b.is_ascii_digit())
+}
+
+/// A ROCm gfx name or an Ascend chip token. `unknown` means the tool did not
+/// print an architecture. NVIDIA capabilities stay `major.minor`.
+fn architecture_token(value: &str) -> bool {
+    (1..=32).contains(&value.len()) && value.bytes().all(|byte| byte.is_ascii_alphanumeric())
 }
 
 fn looks_like_uuid(value: &str) -> bool {

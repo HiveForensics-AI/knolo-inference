@@ -854,6 +854,7 @@ dependencies = [
  "infer-artifact",
  "infer-contracts",
  "infer-engine",
+ "infer-prompt",
  "infer-receipt",
  "infer-serve",
  "serde_json",
@@ -876,12 +877,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "infer-ffi"
+version = "0.1.0"
+dependencies = [
+ "infer-contracts",
+ "infer-engine",
+]
+
+[[package]]
 name = "infer-native"
 version = "0.1.0"
 dependencies = [
  "candle-core",
+ "infer-artifact",
  "infer-contracts",
  "infer-engine",
+ "serde_json",
 ]
 
 [[package]]

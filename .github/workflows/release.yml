@@ -25,7 +25,8 @@ jobs:
           tar -C "${stage}" -czf knolo-infer-linux-x86_64.tar.gz knolo-infer knolo-infer-worker
           (
             cd "${stage}"
-            sha256sum knolo-infer knolo-infer-worker
+            sha256sum knolo-infer | awk '{print $1 "  cpu/" $2}'
+            sha256sum knolo-infer-worker | awk '{print $1 "  cpu/" $2}'
           ) > SHA256SUMS
           sha256sum knolo-infer-linux-x86_64.tar.gz >> SHA256SUMS
       - name: upload the CPU release

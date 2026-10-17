@@ -12,5 +12,9 @@ cuda = ["candle-core/cuda"]
 
 [dependencies]
 candle-core = { version = "0.8.4", default-features = false }
+infer-artifact = { path = "../infer-artifact" }
 infer-contracts = { path = "../infer-contracts" }
 infer-engine = { path = "../infer-engine" }
+
+[dev-dependencies]
+serde_json = "1"

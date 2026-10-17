@@ -430,7 +430,8 @@ fn cli_plans_a_pinned_micro_model() {
 
 #[test]
 fn cli_lists_the_catalog_and_refuses_an_unsupported_pull() {
-    let catalog = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../catalog/library.json");
+    let catalog =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../catalog/library.json");
     let before = fs::read(&catalog).unwrap();
     let help = Command::new(bin()).arg("--help").output().unwrap();
     let help_text = String::from_utf8_lossy(&help.stdout);
@@ -449,18 +450,29 @@ fn cli_lists_the_catalog_and_refuses_an_unsupported_pull() {
     assert_eq!(fs::read(&catalog).unwrap(), before);
     let body: serde_json::Value = serde_json::from_slice(&listed.stdout).unwrap();
     let models = body["models"].as_array().unwrap();
-    assert_eq!(models.len(), 5);
-    let qwen = models
+    assert_eq!(models.len(), 9);
+    let granite = models
         .iter()
-        .find(|row| row["id"] == "qwen3-4b-instruct")
+        .find(|row| row["id"] == "granite-4.2-3b")
         .unwrap();
-    assert_eq!(qwen["status"], "not supported yet");
-    assert_eq!(qwen["gpu"], "not supported yet");
+    assert_eq!(granite["status"], "not supported yet");
+    assert_eq!(granite["gpu"], "not supported yet");
+    assert_eq!(granite["blocker"], "Architecture is granite, not Llama");
+    let bolt = models
+        .iter()
+        .find(|row| row["id"] == "nemotron-3.5-bolt")
+        .unwrap();
+    assert_eq!(bolt["status"], "too big for this machine");
+    assert!(
+        bolt["blocker"].as_str().unwrap().contains("Mamba-2"),
+        "{bolt}"
+    );
     let llama = models
         .iter()
         .find(|row| row["id"] == "llama-3.2-1b-instruct")
         .unwrap();
     assert_eq!(llama["gpu"], "cpu only");
+    assert!(llama.get("blocker").is_none());
     let uncensored = Command::new(bin())
         .args(["library", "--tag", "uncensored", "--json"])
         .output()
@@ -474,14 +486,36 @@ fn cli_lists_the_catalog_and_refuses_an_unsupported_pull() {
         .map(|row| row["id"].as_str().unwrap())
         .collect();
     assert!(ids.contains(&"llama-3.2-1b-uncensored"));
-    assert!(ids.contains(&"qwen3-8b-abliterated"));
+    assert!(ids.contains(&"llama-3.2-3b-uncensored"));
     assert!(!ids.contains(&"llama-3.2-3b-instruct"));
-    let home = std::env::temp_dir().join(format!("knolo-infer-qwen-{}", std::process::id()));
+    let fresh = Command::new(bin())
+        .args(["library", "--tag", "new", "--json"])
+        .output()
+        .unwrap();
+    assert!(fresh.status.success());
+    let fresh: serde_json::Value = serde_json::from_slice(&fresh.stdout).unwrap();
+    let fresh_ids: Vec<_> = fresh["models"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|row| row["id"].as_str().unwrap())
+        .collect();
+    assert_eq!(
+        fresh_ids,
+        [
+            "nemotron-3.5-bolt",
+            "granite-4.2-3b",
+            "qwen3.8-27b",
+            "gemma-4-12b",
+            "muse-glimmer-30b",
+        ]
+    );
+    let home = std::env::temp_dir().join(format!("knolo-infer-granite-{}", std::process::id()));
     let _ = fs::remove_dir_all(&home);
     let pulled = Command::new(bin())
         .args([
             "pull",
-            "qwen3-4b-instruct",
+            "granite-4.2-3b",
             "--yes",
             "--home",
             home.to_str().unwrap(),
@@ -491,8 +525,26 @@ fn cli_lists_the_catalog_and_refuses_an_unsupported_pull() {
     assert!(!pulled.status.success());
     let err = String::from_utf8_lossy(&pulled.stderr);
     assert!(err.contains("UNSUPPORTED_ARCHITECTURE"), "{err}");
-    assert!(err.contains("is not supported yet"), "{err}");
+    assert!(err.contains("Architecture is granite, not Llama"), "{err}");
     assert!(!home.join("models").exists());
+    let bolt_home = std::env::temp_dir().join(format!("knolo-infer-bolt-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&bolt_home);
+    let bolt_pull = Command::new(bin())
+        .args([
+            "pull",
+            "nemotron-3.5-bolt",
+            "--yes",
+            "--home",
+            bolt_home.to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+    assert!(!bolt_pull.status.success());
+    let bolt_err = String::from_utf8_lossy(&bolt_pull.stderr);
+    assert!(bolt_err.contains("INSUFFICIENT_MEMORY"), "{bolt_err}");
+    assert!(bolt_err.contains("22018326528"), "{bolt_err}");
+    assert!(!bolt_home.join("models").exists());
+    let _ = fs::remove_dir_all(&bolt_home);
     let chat = Command::new(bin())
         .args(["run", "llama-3.2-1b-instruct"])
         .output()

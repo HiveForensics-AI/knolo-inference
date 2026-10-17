@@ -72,6 +72,19 @@ pub fn generate_samples(
     prompt: &[u32],
     plan: &SamplerPlanV1,
 ) -> Result<SampledOutput, InferFailure> {
+    generate_samples_with(model, kv, sequence, prompt, plan, &mut |_| {})
+}
+
+/// Same token list and finish reason as `generate_samples`. `on_token` runs
+/// for every accepted id, including the end-of-sequence id, before the next decode.
+pub fn generate_samples_with(
+    model: &mut dyn ExecutableModel,
+    kv: &mut dyn KvStore,
+    sequence: u64,
+    prompt: &[u32],
+    plan: &SamplerPlanV1,
+    on_token: &mut dyn FnMut(u32),
+) -> Result<SampledOutput, InferFailure> {
     plan.validate()?;
     if prompt.is_empty() {
         return Err(fail(
@@ -104,6 +117,7 @@ pub fn generate_samples(
         history.extend_from_slice(&tokens);
         let next = sample_token(&logits, plan, &history, tokens.len() as u32)?;
         tokens.push(next);
+        on_token(next);
         let stopped = plan.eos_token_ids.contains(&next);
         if stopped || tokens.len() == max_tokens as usize {
             let finish_reason = if stopped { "stop" } else { "length" };

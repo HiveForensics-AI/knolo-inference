@@ -31,9 +31,9 @@ use infer_engine::{
     cuda_placement, llama_cuda_placement, require_cuda_slot0,
 };
 use infer_engine::{
-    accept_llama_placement, adapter_vocab, generate_samples, load_sampler_plan,
-    load_verified_model, open_paged_kv, probe_machine, Journal, VerifiedWeightSource,
-    LLAMA_ADAPTER_ID,
+    accept_llama_placement, adapter_vocab, admit_probed_placement, generate_samples_with,
+    load_sampler_plan, load_verified_model, open_paged_kv, probe_machine, Journal,
+    VerifiedWeightSource, LLAMA_ADAPTER_ID,
 };
 #[cfg(not(feature = "cuda"))]
 use infer_native::CandleCpuBackend;
@@ -44,6 +44,7 @@ use infer_prompt::{compile_model_prompt, decode_tokens, parse_tokenizer};
 
 use crate::verify::request_id_of;
 
+#[derive(Clone)]
 pub struct RunOptions {
     pub alias: String,
     pub prompt: String,
@@ -71,6 +72,7 @@ pub struct RunOutput {
     pub receipt_bytes: Vec<u8>,
     pub output_text: String,
     pub output_tokens: Vec<u32>,
+    pub prompt_tokens: Vec<u32>,
     pub request_id: String,
     pub journal_dir: PathBuf,
 }
@@ -108,15 +110,112 @@ pub fn run_pinned(options: &RunOptions) -> Result<RunOutput, InferFailure> {
         options.weights_dir.as_deref(),
     )?;
     let selected = select_host(&source)?;
+    let messages = vec![ChatMessageV1 {
+        role: "user".into(),
+        content: options.prompt.clone(),
+    }];
+    execute_turn(&source, &selected, &messages, options, &mut |_| {})
+}
+
+/// One loaded model and the turns sent so far. `open` loads and places once.
+/// A turn that fails to compile is not appended.
+pub struct ChatSession {
+    source: VerifiedWeightSource,
+    selected: HostSelection,
+    messages: Vec<ChatMessageV1>,
+    loads: u32,
+    last_prompt_tokens: Vec<u32>,
+}
+
+impl ChatSession {
+    pub fn open(options: &RunOptions) -> Result<Self, InferFailure> {
+        check_mode(&options.mode)?;
+        let source = open_pinned(
+            &options.alias,
+            &options.lock_path,
+            options.weights_dir.as_deref(),
+        )?;
+        let selected = select_host(&source)?;
+        Ok(Self {
+            source,
+            selected,
+            messages: Vec::new(),
+            loads: 1,
+            last_prompt_tokens: Vec::new(),
+        })
+    }
+
+    pub fn messages(&self) -> &[ChatMessageV1] {
+        &self.messages
+    }
+
+    pub fn loads(&self) -> u32 {
+        self.loads
+    }
+
+    pub fn last_prompt_tokens(&self) -> &[u32] {
+        &self.last_prompt_tokens
+    }
+
+    pub fn eos_token_ids(&self) -> Vec<u32> {
+        match self
+            .source
+            .image
+            .special_tokens
+            .eos
+            .or(self.source.gguf_eos)
+        {
+            Some(id) => vec![id],
+            None => Vec::new(),
+        }
+    }
+
+    pub fn tokenizer(&self) -> Result<infer_prompt::MicroTokenizer, InferFailure> {
+        parse_tokenizer(
+            &self.source.image.tokenizer.bytes,
+            model_vocab(&self.source)?,
+        )
+    }
+
+    pub fn turn(
+        &mut self,
+        options: &RunOptions,
+        line: &str,
+        on_token: &mut dyn FnMut(u32),
+    ) -> Result<RunOutput, InferFailure> {
+        check_mode(&options.mode)?;
+        let mut pending = self.messages.clone();
+        pending.push(ChatMessageV1 {
+            role: "user".into(),
+            content: line.to_string(),
+        });
+        let output = execute_turn(&self.source, &self.selected, &pending, options, on_token)?;
+        self.last_prompt_tokens.clone_from(&output.prompt_tokens);
+        self.messages.push(ChatMessageV1 {
+            role: "user".into(),
+            content: line.to_string(),
+        });
+        self.messages.push(ChatMessageV1 {
+            role: "assistant".into(),
+            content: output.output_text.clone(),
+        });
+        Ok(output)
+    }
+}
+
+fn execute_turn(
+    source: &VerifiedWeightSource,
+    selected: &HostSelection,
+    messages: &[ChatMessageV1],
+    options: &RunOptions,
+    on_token: &mut dyn FnMut(u32),
+) -> Result<RunOutput, InferFailure> {
     let placement = &selected.placement;
-    let sampler = sampler_from_image(&source, options)?;
+    let sampler = sampler_from_image(source, options)?;
     let compiled = compile_model_prompt(
         &source.image,
-        vec![ChatMessageV1 {
-            role: "user".into(),
-            content: options.prompt.clone(),
-        }],
-        model_vocab(&source)?,
+        messages.to_vec(),
+        model_vocab(source)?,
         placement.context_reservation_tokens,
         sampler.settings.max_output_tokens,
     )?;
@@ -160,11 +259,23 @@ pub fn run_pinned(options: &RunOptions) -> Result<RunOutput, InferFailure> {
     let mut journal = Journal::create(&options.home, &request_id)?;
     journal.write_sampler(&sampler)?;
     journal.append("accepted", intent.root()?)?;
-    let generated = match forward(&source, placement, &sampler, &compiled.plan.token_ids) {
+    let generated = match forward(
+        source,
+        placement,
+        &sampler,
+        &compiled.plan.token_ids,
+        on_token,
+    ) {
         Ok(generated) => generated,
         Err(err) => return Err(note_failure(&mut journal, &request_id, err)),
     };
-    let again = match forward(&source, placement, &sampler, &compiled.plan.token_ids) {
+    let again = match forward(
+        source,
+        placement,
+        &sampler,
+        &compiled.plan.token_ids,
+        &mut |_| {},
+    ) {
         Ok(again) => again,
         Err(err) => return Err(note_failure(&mut journal, &request_id, err)),
     };
@@ -178,8 +289,11 @@ pub fn run_pinned(options: &RunOptions) -> Result<RunOutput, InferFailure> {
             ),
         ));
     }
-    let tokenizer = parse_tokenizer(&source.image.tokenizer.bytes, model_vocab(&source)?)?;
-    let output_text = decode_tokens(&tokenizer, &generated.tokens)?;
+    let tokenizer = parse_tokenizer(&source.image.tokenizer.bytes, model_vocab(source)?)?;
+    let output_text = decode_tokens(
+        &tokenizer,
+        visible_tokens(&generated.tokens, &sampler.eos_token_ids),
+    )?;
     journal.append("prefill", compiled.plan.token_id_root()?)?;
     let mut rolling = Vec::new();
     for token in &generated.tokens {
@@ -197,7 +311,7 @@ pub fn run_pinned(options: &RunOptions) -> Result<RunOutput, InferFailure> {
     let mut receipt = InferenceReceiptV1 {
         receipt_id: compiled.plan.token_id_root()?,
         intent_root: intent.root()?,
-        model: model_binding(&source)?,
+        model: model_binding(source)?,
         engine: EngineReceiptBindingV1 {
             engine_build_root: engine.root()?,
             backend: "native".into(),
@@ -279,6 +393,7 @@ pub fn run_pinned(options: &RunOptions) -> Result<RunOutput, InferFailure> {
     Ok(RunOutput {
         output_text,
         output_tokens: generated.tokens,
+        prompt_tokens: compiled.plan.token_ids,
         request_id,
         journal_dir: journal.dir().to_path_buf(),
         receipt,
@@ -318,7 +433,13 @@ pub fn replay_pinned(options: &ReplayOptions) -> Result<ReplayCheckReceiptV1, In
         mismatches.push("REPLAY_ENVIRONMENT_MISMATCH".into());
     }
     let output_root = if mismatches.is_empty() {
-        let generated = forward(&source, placement, &sampler, &compiled.plan.token_ids)?;
+        let generated = forward(
+            &source,
+            placement,
+            &sampler,
+            &compiled.plan.token_ids,
+            &mut |_| {},
+        )?;
         let root = output_token_root(&generated.tokens)?;
         if root != original.output.output_token_root {
             mismatches.push("REPLAY_OUTPUT_MISMATCH".into());
@@ -381,6 +502,7 @@ fn select_host(source: &VerifiedWeightSource) -> Result<HostSelection, InferFail
         } else {
             accept_cuda_placement(source, &placement)?;
         }
+        admit_probed_placement(&placement)?;
         let bundle = cuda_kernel_bundle(
             CANDLE_CPU_VERSION,
             &slot.toolkit_version,
@@ -405,6 +527,7 @@ fn select_host(source: &VerifiedWeightSource) -> Result<HostSelection, InferFail
         } else {
             accept_cpu_placement(source, &placement)?;
         }
+        admit_probed_placement(&placement)?;
         let bundle = cpu_kernel_bundle(CANDLE_CPU_VERSION)?;
         Ok(HostSelection {
             placement,
@@ -444,6 +567,7 @@ fn forward(
     placement: &PlacementPlanV1,
     sampler: &SamplerPlanV1,
     prompt: &[u32],
+    on_token: &mut dyn FnMut(u32),
 ) -> Result<infer_engine::SampledOutput, InferFailure> {
     let adapter = cpu_adapter_by_id(&source.image.architecture.adapter)?;
     let mut model = {
@@ -459,7 +583,7 @@ fn forward(
         }
     };
     let mut kv = open_paged_kv(source, model.kv_layout())?;
-    generate_samples(model.as_mut(), &mut kv, 1, prompt, sampler)
+    generate_samples_with(model.as_mut(), &mut kv, 1, prompt, sampler, on_token)
 }
 
 fn note_failure(journal: &mut Journal, request_id: &str, err: InferFailure) -> InferFailure {
@@ -494,6 +618,15 @@ fn model_binding(source: &VerifiedWeightSource) -> Result<ModelReceiptBindingV1,
     })
 }
 
+/// The stop token stays in the receipt ids. The displayed reply ends before it.
+fn visible_tokens<'a>(tokens: &'a [u32], eos: &[u32]) -> &'a [u32] {
+    let mut end = tokens.len();
+    while end > 0 && eos.contains(&tokens[end - 1]) {
+        end -= 1;
+    }
+    &tokens[..end]
+}
+
 fn sampler_from_image(
     source: &VerifiedWeightSource,
     options: &RunOptions,
@@ -520,7 +653,7 @@ fn sampler_from_image(
         ));
     }
     let mut eos = Vec::new();
-    if let Some(id) = source.image.special_tokens.eos {
+    if let Some(id) = source.image.special_tokens.eos.or(source.gguf_eos) {
         eos.push(id);
     }
     eos.sort_unstable();
@@ -654,6 +787,94 @@ fn io_receipt(err: std::io::Error) -> InferFailure {
         ErrorCode::ReceiptPersistFailed,
         format!("receipt store: {err}"),
     )
+}
+
+#[cfg(test)]
+mod chat_session {
+    use std::fs;
+
+    use infer_artifact::{
+        compile_manifest, new_lockfile, pin_alias, verify_image, write_lockfile, write_model_image,
+    };
+    use infer_contracts::ErrorCode;
+    use infer_engine::{cargo_lock_root, write_synthetic_model};
+    use infer_prompt::{encode_text, parse_tokenizer};
+
+    use super::{ChatSession, RunOptions};
+
+    #[test]
+    fn two_turns_keep_the_text_and_load_once_and_a_long_line_is_dropped() {
+        let dir =
+            std::env::temp_dir().join(format!("knolo-infer-chat-session-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        write_synthetic_model(&dir).unwrap();
+        fs::write(
+            dir.join("template.jinja"),
+            "{% for message in messages %}{{ message.content }}{% endfor %}",
+        )
+        .unwrap();
+        let compiled = compile_manifest(&dir.join("manifest.json")).unwrap();
+        write_model_image(&dir.join("micro.kmodel"), &compiled.bytes).unwrap();
+        let bytes = fs::read(dir.join("micro.kmodel")).unwrap();
+        let verification = verify_image(&bytes).unwrap();
+        let mut lock = new_lockfile(&cargo_lock_root().unwrap());
+        pin_alias(&mut lock, "micro", "micro.kmodel", &verification.image).unwrap();
+        write_lockfile(&dir.join("knolo.infer.lock.json"), &lock).unwrap();
+
+        let options = RunOptions {
+            alias: "micro".into(),
+            prompt: String::new(),
+            mode: "pinned".into(),
+            lock_path: dir.join("knolo.infer.lock.json"),
+            home: dir.join("home"),
+            weights_dir: Some(dir.clone()),
+            max_output_tokens: Some(2),
+            temperature_micros: None,
+            seed: None,
+            stream: None,
+            evidence: None,
+            signing_key: None,
+        };
+        let mut session = ChatSession::open(&options).unwrap();
+        assert_eq!(session.loads(), 1);
+        let first = session.turn(&options, "h", &mut |_| {}).unwrap();
+        let assistant = first.output_text.clone();
+        let second = session.turn(&options, "t", &mut |_| {}).unwrap();
+        let tokenizer = parse_tokenizer(&verification.image.tokenizer.bytes, 16).unwrap();
+        let mut expected = vec![verification.image.special_tokens.bos.unwrap()];
+        expected.extend(encode_text(&tokenizer, &format!("h{assistant}t")).unwrap());
+        assert_eq!(session.last_prompt_tokens(), expected.as_slice());
+        assert!(session
+            .last_prompt_tokens()
+            .windows(encode_text(&tokenizer, "h").unwrap().len())
+            .any(|window| window == encode_text(&tokenizer, "h").unwrap()));
+        let assistant_ids = encode_text(&tokenizer, &assistant).unwrap();
+        if !assistant_ids.is_empty() {
+            assert!(session
+                .last_prompt_tokens()
+                .windows(assistant_ids.len())
+                .any(|window| window == assistant_ids));
+        }
+        assert_eq!(session.messages().len(), 4);
+        assert_eq!(session.messages()[0].content, "h");
+        assert_eq!(session.messages()[1].role, "assistant");
+        assert_eq!(session.messages()[1].content, assistant);
+        assert_eq!(session.messages()[2].content, "t");
+        assert_eq!(session.messages()[3].content, second.output_text);
+        assert_eq!(session.loads(), 1);
+        let kept = session.messages().to_vec();
+        let kept_prompt = session.last_prompt_tokens().to_vec();
+        let err = match session.turn(&options, &"a".repeat(20), &mut |_| {}) {
+            Ok(_) => panic!("a line past the context was kept"),
+            Err(err) => err,
+        };
+        assert_eq!(err.code, ErrorCode::ContextLimitExceeded);
+        assert_eq!(session.messages(), kept.as_slice());
+        assert_eq!(session.last_prompt_tokens(), kept_prompt.as_slice());
+        assert_eq!(session.loads(), 1);
+        let _ = fs::remove_dir_all(&dir);
+    }
 }
 
 #[cfg(all(test, feature = "cuda"))]

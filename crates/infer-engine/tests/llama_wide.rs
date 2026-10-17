@@ -5,13 +5,13 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use infer_artifact::{
-    compile_manifest, encode_gguf, write_model_image, GgufMetadata, GgufTensorDraft, GgufTensorType,
-    GgufValue,
+    compile_manifest, encode_gguf, write_model_image, GgufMetadata, GgufTensorDraft,
+    GgufTensorType, GgufValue,
 };
 use infer_contracts::ErrorCode;
 use infer_engine::{
-    greedy_generate, llama_cpu_placement, llama_cuda_placement, load_verified_model,
-    open_paged_kv, ArchitectureAdapter, LlamaAdapter, ReferenceF32Backend,
+    admit_placement_memory, greedy_generate, llama_cpu_placement, llama_cuda_placement,
+    load_verified_model, open_paged_kv, ArchitectureAdapter, LlamaAdapter, ReferenceF32Backend,
 };
 
 static TEMP: AtomicU64 = AtomicU64::new(0);
@@ -82,11 +82,29 @@ struct TensorDraft {
 }
 
 fn write_image(dir: &Path, drafts: &[TensorDraft], precisions: &[&str], vocab: usize) {
+    write_image_context(dir, drafts, precisions, vocab, 32, 32);
+}
+
+fn write_image_context(
+    dir: &Path,
+    drafts: &[TensorDraft],
+    precisions: &[&str],
+    vocab: usize,
+    file_context: u32,
+    stamp: u32,
+) {
     let mut gguf = Vec::new();
     for draft in drafts {
-        let len = draft.shape.iter().map(|dim| *dim as usize).product::<usize>();
+        let len = draft
+            .shape
+            .iter()
+            .map(|dim| *dim as usize)
+            .product::<usize>();
         let (tensor_type, bytes) = if draft.dtype == "q8_0" {
-            (GgufTensorType::Q8_0, q8_bytes(draft.shape[0] as usize, draft.shape[1] as usize))
+            (
+                GgufTensorType::Q8_0,
+                q8_bytes(draft.shape[0] as usize, draft.shape[1] as usize),
+            )
         } else {
             (GgufTensorType::F32, f32_bytes(draft.knolo, len))
         };
@@ -101,18 +119,29 @@ fn write_image(dir: &Path, drafts: &[TensorDraft], precisions: &[&str], vocab: u
     }
     let mut metadata = vec![
         meta_str("general.architecture", "llama"),
-        meta_u32("llama.attention.head_count", if drafts[0].shape[1] == 8 { 2 } else { 4 }),
-        meta_u32("llama.attention.head_count_kv", if drafts[0].shape[1] == 8 { 1 } else { 4 }),
+        meta_u32(
+            "llama.attention.head_count",
+            if drafts[0].shape[1] == 8 { 2 } else { 4 },
+        ),
+        meta_u32(
+            "llama.attention.head_count_kv",
+            if drafts[0].shape[1] == 8 { 1 } else { 4 },
+        ),
         meta_f32("llama.rope.freq_base", 500_000.0),
         meta_f32("llama.attention.layer_norm_rms_eps", 1e-5),
-        meta_u32("llama.context_length", 32),
+        meta_u32("llama.context_length", file_context),
     ];
     if precisions.contains(&"q8_0") {
         metadata.push(meta_u32("general.quantization_version", 2));
     }
     let bytes = encode_gguf(&metadata, &gguf).unwrap();
     fs::write(dir.join("weights.gguf"), bytes).unwrap();
-    let mut tokens = vec!["<pad>".to_string(), "<bos>".to_string(), "<eos>".to_string(), "\n".to_string()];
+    let mut tokens = vec![
+        "<pad>".to_string(),
+        "<bos>".to_string(),
+        "<eos>".to_string(),
+        "\n".to_string(),
+    ];
     while tokens.len() < vocab {
         tokens.push(format!("t{}", tokens.len()));
     }
@@ -144,7 +173,7 @@ fn write_image(dir: &Path, drafts: &[TensorDraft], precisions: &[&str], vocab: u
     let manifest = serde_json::json!({
         "architecture": {"adapter": "knolo.llama.v1", "family": "llama"},
         "capabilities": ["text-generation"],
-        "extensions": {"knolo.llama.context": 32},
+        "extensions": {"knolo.llama.context": stamp},
         "generationDefaults": {
             "frequencyPenaltyMicros": 0,
             "maxOutputTokens": 4,
@@ -180,41 +209,151 @@ fn write_image(dir: &Path, drafts: &[TensorDraft], precisions: &[&str], vocab: u
 
 fn f32_drafts() -> Vec<TensorDraft> {
     vec![
-        TensorDraft { knolo: "embed.weight", ggml: "token_embd.weight", shape: vec![40, 8], dtype: "f32" },
-        TensorDraft { knolo: "layers.0.attn_norm.weight", ggml: "blk.0.attn_norm.weight", shape: vec![8], dtype: "f32" },
-        TensorDraft { knolo: "layers.0.attn.q.weight", ggml: "blk.0.attn_q.weight", shape: vec![8, 8], dtype: "f32" },
-        TensorDraft { knolo: "layers.0.attn.k.weight", ggml: "blk.0.attn_k.weight", shape: vec![4, 8], dtype: "f32" },
-        TensorDraft { knolo: "layers.0.attn.v.weight", ggml: "blk.0.attn_v.weight", shape: vec![4, 8], dtype: "f32" },
-        TensorDraft { knolo: "layers.0.attn.o.weight", ggml: "blk.0.attn_output.weight", shape: vec![8, 8], dtype: "f32" },
-        TensorDraft { knolo: "layers.0.mlp_norm.weight", ggml: "blk.0.ffn_norm.weight", shape: vec![8], dtype: "f32" },
-        TensorDraft { knolo: "layers.0.mlp.gate.weight", ggml: "blk.0.ffn_gate.weight", shape: vec![16, 8], dtype: "f32" },
-        TensorDraft { knolo: "layers.0.mlp.up.weight", ggml: "blk.0.ffn_up.weight", shape: vec![16, 8], dtype: "f32" },
-        TensorDraft { knolo: "layers.0.mlp.down.weight", ggml: "blk.0.ffn_down.weight", shape: vec![8, 16], dtype: "f32" },
-        TensorDraft { knolo: "final_norm.weight", ggml: "output_norm.weight", shape: vec![8], dtype: "f32" },
-        TensorDraft { knolo: "lm_head.weight", ggml: "output.weight", shape: vec![40, 8], dtype: "f32" },
+        TensorDraft {
+            knolo: "embed.weight",
+            ggml: "token_embd.weight",
+            shape: vec![40, 8],
+            dtype: "f32",
+        },
+        TensorDraft {
+            knolo: "layers.0.attn_norm.weight",
+            ggml: "blk.0.attn_norm.weight",
+            shape: vec![8],
+            dtype: "f32",
+        },
+        TensorDraft {
+            knolo: "layers.0.attn.q.weight",
+            ggml: "blk.0.attn_q.weight",
+            shape: vec![8, 8],
+            dtype: "f32",
+        },
+        TensorDraft {
+            knolo: "layers.0.attn.k.weight",
+            ggml: "blk.0.attn_k.weight",
+            shape: vec![4, 8],
+            dtype: "f32",
+        },
+        TensorDraft {
+            knolo: "layers.0.attn.v.weight",
+            ggml: "blk.0.attn_v.weight",
+            shape: vec![4, 8],
+            dtype: "f32",
+        },
+        TensorDraft {
+            knolo: "layers.0.attn.o.weight",
+            ggml: "blk.0.attn_output.weight",
+            shape: vec![8, 8],
+            dtype: "f32",
+        },
+        TensorDraft {
+            knolo: "layers.0.mlp_norm.weight",
+            ggml: "blk.0.ffn_norm.weight",
+            shape: vec![8],
+            dtype: "f32",
+        },
+        TensorDraft {
+            knolo: "layers.0.mlp.gate.weight",
+            ggml: "blk.0.ffn_gate.weight",
+            shape: vec![16, 8],
+            dtype: "f32",
+        },
+        TensorDraft {
+            knolo: "layers.0.mlp.up.weight",
+            ggml: "blk.0.ffn_up.weight",
+            shape: vec![16, 8],
+            dtype: "f32",
+        },
+        TensorDraft {
+            knolo: "layers.0.mlp.down.weight",
+            ggml: "blk.0.ffn_down.weight",
+            shape: vec![8, 16],
+            dtype: "f32",
+        },
+        TensorDraft {
+            knolo: "final_norm.weight",
+            ggml: "output_norm.weight",
+            shape: vec![8],
+            dtype: "f32",
+        },
+        TensorDraft {
+            knolo: "lm_head.weight",
+            ggml: "output.weight",
+            shape: vec![40, 8],
+            dtype: "f32",
+        },
     ]
 }
 
 fn q8_drafts() -> Vec<TensorDraft> {
-    let quant = |knolo, ggml, shape| TensorDraft { knolo, ggml, shape, dtype: "q8_0" };
-    let norm = |knolo, ggml, shape| TensorDraft { knolo, ggml, shape, dtype: "f32" };
+    let quant = |knolo, ggml, shape| TensorDraft {
+        knolo,
+        ggml,
+        shape,
+        dtype: "q8_0",
+    };
+    let norm = |knolo, ggml, shape| TensorDraft {
+        knolo,
+        ggml,
+        shape,
+        dtype: "f32",
+    };
     vec![
         quant("embed.weight", "token_embd.weight", vec![64, 32]),
-        norm("layers.0.attn_norm.weight", "blk.0.attn_norm.weight", vec![32]),
-        quant("layers.0.attn.q.weight", "blk.0.attn_q.weight", vec![32, 32]),
-        quant("layers.0.attn.k.weight", "blk.0.attn_k.weight", vec![32, 32]),
-        quant("layers.0.attn.v.weight", "blk.0.attn_v.weight", vec![32, 32]),
-        quant("layers.0.attn.o.weight", "blk.0.attn_output.weight", vec![32, 32]),
-        norm("layers.0.mlp_norm.weight", "blk.0.ffn_norm.weight", vec![32]),
-        quant("layers.0.mlp.gate.weight", "blk.0.ffn_gate.weight", vec![64, 32]),
-        quant("layers.0.mlp.up.weight", "blk.0.ffn_up.weight", vec![64, 32]),
-        quant("layers.0.mlp.down.weight", "blk.0.ffn_down.weight", vec![32, 64]),
+        norm(
+            "layers.0.attn_norm.weight",
+            "blk.0.attn_norm.weight",
+            vec![32],
+        ),
+        quant(
+            "layers.0.attn.q.weight",
+            "blk.0.attn_q.weight",
+            vec![32, 32],
+        ),
+        quant(
+            "layers.0.attn.k.weight",
+            "blk.0.attn_k.weight",
+            vec![32, 32],
+        ),
+        quant(
+            "layers.0.attn.v.weight",
+            "blk.0.attn_v.weight",
+            vec![32, 32],
+        ),
+        quant(
+            "layers.0.attn.o.weight",
+            "blk.0.attn_output.weight",
+            vec![32, 32],
+        ),
+        norm(
+            "layers.0.mlp_norm.weight",
+            "blk.0.ffn_norm.weight",
+            vec![32],
+        ),
+        quant(
+            "layers.0.mlp.gate.weight",
+            "blk.0.ffn_gate.weight",
+            vec![64, 32],
+        ),
+        quant(
+            "layers.0.mlp.up.weight",
+            "blk.0.ffn_up.weight",
+            vec![64, 32],
+        ),
+        quant(
+            "layers.0.mlp.down.weight",
+            "blk.0.ffn_down.weight",
+            vec![32, 64],
+        ),
         norm("final_norm.weight", "output_norm.weight", vec![32]),
         quant("lm_head.weight", "output.weight", vec![64, 32]),
     ]
 }
 
-fn run_prompt(dir: &Path, prompt: &[u32], new_tokens: u32) -> Result<Vec<u32>, infer_contracts::InferFailure> {
+fn run_prompt(
+    dir: &Path,
+    prompt: &[u32],
+    new_tokens: u32,
+) -> Result<Vec<u32>, infer_contracts::InferFailure> {
     let source = load_verified_model(&dir.join("wide.kmodel"), dir)?;
     let placement = llama_cpu_placement(&source)?;
     let mut model = LlamaAdapter.build(&source, &placement, &ReferenceF32Backend)?;
@@ -239,16 +378,22 @@ fn wide_f32_gguf_reads_metadata_and_crosses_a_kv_page() {
     assert_eq!(shape.context, 32);
     assert_eq!(shape.rope_theta, 500_000.0);
     assert_eq!(shape.page_count(), 2);
-    let cuda = llama_cuda_placement(&source).unwrap_err();
-    assert_eq!(cuda.code, ErrorCode::UnsupportedKernel);
-    assert!(cuda.message.contains("no CUDA kernel"));
+    let cuda = llama_cuda_placement(&source).unwrap();
+    assert_eq!(cuda.devices, vec!["slot-0".to_string()]);
+    assert_eq!(cuda.context_reservation_tokens, shape.context);
+    assert_eq!(cuda.kv_precision, "f32");
 
     let prompt: Vec<u32> = (1..21).collect();
     let first = run_prompt(&dir, &prompt, 2).unwrap();
     let second = run_prompt(&dir, &prompt, 2).unwrap();
     assert_eq!(first.len(), 2);
     assert_eq!(first, second);
-    let err = run_prompt(&dir, &(0..33).map(|id| (id % 39) + 1).collect::<Vec<_>>(), 1).unwrap_err();
+    let err = run_prompt(
+        &dir,
+        &(0..33).map(|id| (id % 39) + 1).collect::<Vec<_>>(),
+        1,
+    )
+    .unwrap_err();
     assert_eq!(err.code, ErrorCode::ContextLimitExceeded);
 }
 
@@ -267,4 +412,41 @@ fn wide_q8_gguf_is_deterministic_on_cpu() {
     let second = run_prompt(&dir, &prompt, 2).unwrap();
     assert_eq!(first, second);
     assert_eq!(first.len(), 2);
+}
+
+#[test]
+fn a_reservation_above_available_memory_is_refused_before_prefill() {
+    let dir = scratch();
+    write_image_context(&dir, &f32_drafts(), &["f32"], 40, 8192, 8192);
+    let source = load_verified_model(&dir.join("wide.kmodel"), &dir).unwrap();
+    let shape = source.llama.unwrap();
+    assert_eq!(shape.context, 8192);
+    let placement = llama_cpu_placement(&source).unwrap();
+    assert_eq!(placement.context_reservation_tokens, 8192);
+    assert!(placement.expected_total_bytes > 1024);
+    let err = admit_placement_memory(&placement, Some(1024)).unwrap_err();
+    assert_eq!(err.code, ErrorCode::InsufficientMemory);
+    assert!(
+        err.message
+            .contains(&placement.expected_total_bytes.to_string()),
+        "{err}"
+    );
+    assert!(err.message.contains("1024"), "{err}");
+    let missing = admit_placement_memory(&placement, None).unwrap_err();
+    assert_eq!(missing.code, ErrorCode::InsufficientMemory);
+    assert!(
+        missing.message.contains("available memory was not probed"),
+        "{missing}"
+    );
+    admit_placement_memory(&placement, Some(placement.expected_total_bytes)).unwrap();
+}
+
+#[test]
+fn a_smaller_catalog_stamp_stays_below_the_file_cap() {
+    let dir = scratch();
+    write_image_context(&dir, &f32_drafts(), &["f32"], 40, 8192, 2048);
+    let source = load_verified_model(&dir.join("wide.kmodel"), &dir).unwrap();
+    assert_eq!(source.llama.unwrap().context, 2048);
+    let placement = llama_cpu_placement(&source).unwrap();
+    assert_eq!(placement.context_reservation_tokens, 2048);
 }

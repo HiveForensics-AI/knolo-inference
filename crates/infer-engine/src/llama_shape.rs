@@ -1,5 +1,6 @@
 //! Geometry for `knolo.llama.v1`. The toy fixture is the constant shape.
-//! A wider inventory carries its own counts. RoPE stays rotate-half.
+//! A wider inventory carries its own counts. The toy fixture uses rotate-half
+//! RoPE. A GGUF Llama rotates adjacent pairs.
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -7,7 +8,7 @@ use std::sync::Arc;
 use infer_artifact::GgufTensorType;
 
 /// Tokens reserved for a Llama that is not the llama-tiny fixture.
-pub const LLAMA_RUN_CONTEXT: u32 = 2048;
+pub const LLAMA_RUN_CONTEXT: u32 = 8192;
 
 /// KV block used for every Llama placement. The toy context equals this.
 pub const LLAMA_BLOCK: u32 = 16;
@@ -80,4 +81,7 @@ pub struct PackedTensor {
 pub struct LlamaTensors {
     pub dense: BTreeMap<String, Arc<[f32]>>,
     pub packed: Vec<PackedTensor>,
+    /// Llama 3 `rope_freqs.weight`, one positive divisor per RoPE pair.
+    /// Empty means the unscaled `rope_theta`.
+    pub rope_freq_factors: Vec<f32>,
 }

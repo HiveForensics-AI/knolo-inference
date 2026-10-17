@@ -48,11 +48,17 @@ pub struct CatalogRow {
     pub quant: String,
     pub context_reservation: u32,
     pub min_ram_bytes: u64,
+    /// Device memory the weight file needs. Zero means the row has no VRAM floor.
+    #[serde(default)]
+    pub min_vram_bytes: u64,
     pub license_id: String,
     pub license_url: String,
     pub tags: Vec<String>,
     pub gated: bool,
     pub status: String,
+    /// Why a `not_supported` row cannot run. A runnable row omits it.
+    #[serde(default)]
+    pub blocker: Option<String>,
     #[serde(default)]
     pub chat_template: Option<String>,
     #[serde(default)]
@@ -115,6 +121,7 @@ pub struct PullRequest<'a> {
     pub policy: &'a FetchPolicy,
     pub accept_license: bool,
     pub ram_bytes: Option<u64>,
+    pub vram_bytes: Option<u64>,
     pub token: Option<&'a str>,
     pub build_root: &'a DigestHex,
 }
@@ -125,12 +132,8 @@ pub fn checked_in_catalog() -> Result<Catalog, InferFailure> {
 
 pub fn load_catalog(text: &str) -> Result<Catalog, InferFailure> {
     let value = crate::json::parse_strict_json(text, ErrorCode::ContractInvalid)?;
-    let catalog: Catalog = serde_json::from_value(value).map_err(|err| {
-        fail(
-            ErrorCode::ContractInvalid,
-            format!("model catalog: {err}"),
-        )
-    })?;
+    let catalog: Catalog = serde_json::from_value(value)
+        .map_err(|err| fail(ErrorCode::ContractInvalid, format!("model catalog: {err}")))?;
     validate_catalog(&catalog)?;
     Ok(catalog)
 }
@@ -149,25 +152,98 @@ pub fn find_row<'a>(catalog: &'a Catalog, id: &str) -> Option<&'a CatalogRow> {
     catalog.models.iter().find(|row| row.id == id)
 }
 
-/// Status shown by `library`. Architecture refusal wins over a RAM check.
-pub fn display_status(row: &CatalogRow, ram_bytes: Option<u64>) -> &'static str {
+/// Status shown by `library`. A memory refusal wins over an architecture refusal
+/// so a file that cannot fit is not described as merely unsupported.
+pub fn display_status(
+    row: &CatalogRow,
+    ram_bytes: Option<u64>,
+    vram_bytes: Option<u64>,
+) -> &'static str {
+    if memory_exceeded(row, ram_bytes, vram_bytes) {
+        return "too big for this machine";
+    }
     if row.status != "runnable" {
         return "not supported yet";
-    }
-    if let Some(ram) = ram_bytes {
-        if row.min_ram_bytes > ram {
-            return "too big for this machine";
-        }
     }
     "runnable"
 }
 
-/// Real Llama rows have no quantized GPU kernel. The column stays honest about that.
-pub fn gpu_label(row: &CatalogRow) -> &'static str {
-    if row.status == "runnable" {
-        "cpu only"
+/// Refuse a row that cannot be loaded, before a license prompt or a connection.
+/// Memory is checked first. A file that fits and is still `not_supported` names
+/// `blocker` when the row has one.
+pub fn admit_catalog_row(
+    row: &CatalogRow,
+    ram_bytes: Option<u64>,
+    vram_bytes: Option<u64>,
+    device_noun: &str,
+) -> Result<(), InferFailure> {
+    if let Some(vram) = vram_bytes {
+        if row.min_vram_bytes > vram {
+            let noun = if device_noun.is_empty() {
+                "GPU"
+            } else {
+                device_noun
+            };
+            return Err(fail(
+                ErrorCode::InsufficientMemory,
+                format!(
+                    "{} needs {} bytes and this {noun} reports {vram}",
+                    row.display_name, row.min_vram_bytes
+                ),
+            ));
+        }
+    }
+    if let Some(ram) = ram_bytes {
+        if row.min_ram_bytes > ram {
+            return Err(fail(
+                ErrorCode::InsufficientMemory,
+                format!(
+                    "{} needs {} bytes of RAM and this machine reports {ram}",
+                    row.display_name, row.min_ram_bytes
+                ),
+            ));
+        }
+    }
+    if row.status != "runnable" || row.adapter != "knolo.llama.v1" {
+        return Err(fail(
+            ErrorCode::UnsupportedArchitecture,
+            unsupported_message(row),
+        ));
+    }
+    Ok(())
+}
+
+fn memory_exceeded(row: &CatalogRow, ram_bytes: Option<u64>, vram_bytes: Option<u64>) -> bool {
+    if let Some(vram) = vram_bytes {
+        if row.min_vram_bytes > vram {
+            return true;
+        }
+    }
+    if let Some(ram) = ram_bytes {
+        if row.min_ram_bytes > ram {
+            return true;
+        }
+    }
+    false
+}
+
+fn unsupported_message(row: &CatalogRow) -> String {
+    match &row.blocker {
+        Some(blocker) => format!("{}: {blocker}", row.display_name),
+        None => format!("{} is not supported yet", row.display_name),
+    }
+}
+
+/// GPU column for `library`. A runnable row places on `slot-0` only when this
+/// binary was built with the CUDA feature. The default build stays `cpu only`.
+pub fn gpu_label(row: &CatalogRow, cuda: bool) -> &'static str {
+    if row.status != "runnable" {
+        return "not supported yet";
+    }
+    if cuda {
+        "slot-0"
     } else {
-        "not supported yet"
+        "cpu only"
     }
 }
 
@@ -251,28 +327,12 @@ pub fn refresh_catalog(
 
 pub fn pull_catalog_row(request: &PullRequest<'_>) -> Result<PullOutcome, InferFailure> {
     let row = request.row;
-    if row.status != "runnable" || row.adapter != "knolo.llama.v1" {
-        return Err(fail(
-            ErrorCode::UnsupportedArchitecture,
-            format!("{} is not supported yet", row.display_name),
-        ));
-    }
+    admit_catalog_row(row, request.ram_bytes, request.vram_bytes, "GPU")?;
     if row.sha256.is_empty() {
         return Err(fail(
             ErrorCode::ModelArtifactMissing,
             "a catalog row without a sha256 cannot be pulled",
         ));
-    }
-    if let Some(ram) = request.ram_bytes {
-        if row.min_ram_bytes > ram {
-            return Err(fail(
-                ErrorCode::InsufficientMemory,
-                format!(
-                    "{} needs {} bytes of RAM and this machine reports {ram}",
-                    row.display_name, row.min_ram_bytes
-                ),
-            ));
-        }
     }
     if !request.accept_license {
         return Err(fail(
@@ -418,6 +478,18 @@ fn validate_catalog(catalog: &Catalog) -> Result<(), InferFailure> {
                 "catalog status must be runnable or not_supported",
             ));
         }
+        if let Some(blocker) = &row.blocker {
+            if row.status == "runnable"
+                || blocker.is_empty()
+                || blocker.len() > 180
+                || blocker.chars().any(|ch| ch.is_control())
+            {
+                return Err(fail(
+                    ErrorCode::ContractInvalid,
+                    "catalog blocker is invalid",
+                ));
+            }
+        }
         if !row.sha256.is_empty() {
             digest_hex(&row.sha256)?;
         }
@@ -425,10 +497,7 @@ fn validate_catalog(catalog: &Catalog) -> Result<(), InferFailure> {
         check_token(&row.revision, "revision")?;
         check_relative_posix(&row.filename, ErrorCode::ContractInvalid)?;
         for tag in &row.tags {
-            if !matches!(
-                tag.as_str(),
-                "instruct" | "base" | "uncensored" | "new"
-            ) {
+            if !matches!(tag.as_str(), "instruct" | "base" | "uncensored" | "new") {
                 return Err(fail(
                     ErrorCode::ContractInvalid,
                     format!("catalog tag {tag} is not allowlisted"),
@@ -464,12 +533,11 @@ fn validate_catalog(catalog: &Catalog) -> Result<(), InferFailure> {
                     "a runnable catalog file size must be non-zero",
                 ));
             }
-            if !(16..=2048).contains(&row.context_reservation)
-                || row.context_reservation % 16 != 0
+            if !(16..=8192).contains(&row.context_reservation) || row.context_reservation % 16 != 0
             {
                 return Err(fail(
                     ErrorCode::ContractInvalid,
-                    "catalog context reservation must be a multiple of 16 from 16 to 2048",
+                    "catalog context reservation must be a multiple of 16 from 16 to 8192",
                 ));
             }
         }
@@ -650,7 +718,10 @@ fn download_resolved(
         let _ = fs::remove_file(dest);
         return Err(fail(
             ErrorCode::ModelDigestMismatch,
-            format!("download size does not match the catalog row{}", curl_note(&stderr)),
+            format!(
+                "download size does not match the catalog row{}",
+                curl_note(&stderr)
+            ),
         ));
     }
     let mut digest = [0u8; 32];
@@ -684,7 +755,11 @@ fn curl_note(stderr: &str) -> String {
     }
 }
 
-fn resolve_url(url: &str, policy: &FetchPolicy, token: Option<&str>) -> Result<String, InferFailure> {
+fn resolve_url(
+    url: &str,
+    policy: &FetchPolicy,
+    token: Option<&str>,
+) -> Result<String, InferFailure> {
     check_fetch_url(url, policy)?;
     let mut current = url.to_string();
     for _ in 0..5 {
@@ -730,7 +805,12 @@ fn url_host(url: &str) -> Result<String, InferFailure> {
     let rest = url
         .strip_prefix("https://")
         .or_else(|| url.strip_prefix("http://"))
-        .ok_or_else(|| fail(ErrorCode::ModelArtifactMissing, "download URL must be http(s)"))?;
+        .ok_or_else(|| {
+            fail(
+                ErrorCode::ModelArtifactMissing,
+                "download URL must be http(s)",
+            )
+        })?;
     if rest.contains('@') {
         return Err(fail(
             ErrorCode::ModelArtifactMissing,
@@ -780,7 +860,15 @@ fn curl_command(token: Option<&str>) -> Command {
 
 fn curl_head(url: &str, token: Option<&str>) -> Result<String, InferFailure> {
     let output = curl_command(token)
-        .args(["--head", "--max-redirs", "0", "--output", "/dev/null", "--dump-header", "-"])
+        .args([
+            "--head",
+            "--max-redirs",
+            "0",
+            "--output",
+            "/dev/null",
+            "--dump-header",
+            "-",
+        ])
         .arg(url)
         .output()
         .map_err(|err| {
@@ -792,7 +880,10 @@ fn curl_head(url: &str, token: Option<&str>) -> Result<String, InferFailure> {
     if !output.status.success() {
         return Err(fail(
             ErrorCode::ModelArtifactMissing,
-            format!("download probe failed{}", curl_note(&String::from_utf8_lossy(&output.stderr))),
+            format!(
+                "download probe failed{}",
+                curl_note(&String::from_utf8_lossy(&output.stderr))
+            ),
         ));
     }
     String::from_utf8(output.stdout).map_err(|_| {
@@ -839,12 +930,15 @@ fn curl_body(url: &str) -> Result<String, InferFailure> {
 }
 
 fn header_status(headers: &str) -> Result<u16, InferFailure> {
-    let line = headers.lines().find(|line| line.starts_with("HTTP/")).ok_or_else(|| {
-        fail(
-            ErrorCode::ModelArtifactMissing,
-            "download probe did not return a status",
-        )
-    })?;
+    let line = headers
+        .lines()
+        .find(|line| line.starts_with("HTTP/"))
+        .ok_or_else(|| {
+            fail(
+                ErrorCode::ModelArtifactMissing,
+                "download probe did not return a status",
+            )
+        })?;
     let code = line.split_whitespace().nth(1).ok_or_else(|| {
         fail(
             ErrorCode::ModelArtifactMissing,
@@ -906,12 +1000,8 @@ fn sha256(bytes: &[u8]) -> [u8; 32] {
 /// A Knolo token list, and a file that is already that envelope, stays as downloaded.
 fn install_tokenizer(path: &Path) -> Result<(), InferFailure> {
     let bytes = fs::read(path).map_err(io_missing)?;
-    let text = std::str::from_utf8(&bytes).map_err(|_| {
-        fail(
-            ErrorCode::TokenizerInvalid,
-            "tokenizer bytes are not UTF-8",
-        )
-    })?;
+    let text = std::str::from_utf8(&bytes)
+        .map_err(|_| fail(ErrorCode::TokenizerInvalid, "tokenizer bytes are not UTF-8"))?;
     let parsed = match crate::json::parse_strict_json(text, ErrorCode::TokenizerInvalid) {
         Ok(value) => value,
         Err(err) if err.message == "JSON null is not allowed" => {
@@ -932,7 +1022,11 @@ fn install_tokenizer(path: &Path) -> Result<(), InferFailure> {
             "tokenizer kind is not allowlisted",
         ));
     }
-    if parsed.get("model").filter(|item| item.is_object()).is_none() {
+    if parsed
+        .get("model")
+        .filter(|item| item.is_object())
+        .is_none()
+    {
         return Err(fail(
             ErrorCode::TokenizerInvalid,
             "huggingface tokenizer is missing its model",
@@ -986,7 +1080,10 @@ fn manifest_json(row: &CatalogRow, file: &crate::gguf::GgufFile) -> Result<Strin
             "shape": shape,
         }));
     }
-    if !inventory.iter().any(|item| item["name"] == "lm_head.weight") {
+    if !inventory
+        .iter()
+        .any(|item| item["name"] == "lm_head.weight")
+    {
         if let Some(embed) = inventory
             .iter()
             .find(|item| item["name"] == "embed.weight")

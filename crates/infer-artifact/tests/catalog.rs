@@ -10,20 +10,19 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use infer_artifact::{
-    checked_in_catalog, encode_gguf, hash_regular_file, list_installed, load_catalog,
-    new_lockfile, pull_catalog_row, refresh_catalog, remove_installed, write_lockfile, DigestHex,
-    ErrorCode, FetchPolicy, GgufMetadata, GgufTensorDraft, GgufTensorType, GgufValue, InferFailure,
-    ModelPin, PullOutcome, PullRequest, LLAMA_CHAT_TEMPLATE,
+    admit_catalog_row, checked_in_catalog, display_status, encode_gguf, hash_regular_file,
+    list_installed, load_catalog, new_lockfile, pull_catalog_row, refresh_catalog,
+    remove_installed, write_lockfile, DigestHex, ErrorCode, FetchPolicy, GgufMetadata,
+    GgufTensorDraft, GgufTensorType, GgufValue, InferFailure, ModelPin, PullOutcome, PullRequest,
+    LLAMA_CHAT_TEMPLATE,
 };
 
 static TEMP: AtomicU64 = AtomicU64::new(0);
 
 fn scratch(label: &str) -> PathBuf {
     let n = TEMP.fetch_add(1, Ordering::Relaxed);
-    let dir = std::env::temp_dir().join(format!(
-        "knolo-catalog-{}-{n}-{label}",
-        std::process::id()
-    ));
+    let dir =
+        std::env::temp_dir().join(format!("knolo-catalog-{}-{n}-{label}", std::process::id()));
     let _ = fs::remove_dir_all(&dir);
     fs::create_dir_all(&dir).unwrap();
     dir
@@ -72,6 +71,8 @@ struct CatalogSpec<'a> {
     adapter: &'a str,
     gated: bool,
     min_ram: u64,
+    min_vram: u64,
+    blocker: Option<&'a str>,
 }
 
 impl<'a> CatalogSpec<'a> {
@@ -92,6 +93,8 @@ impl<'a> CatalogSpec<'a> {
             adapter: "knolo.llama.v1",
             gated: false,
             min_ram: 1,
+            min_vram: 0,
+            blocker: None,
         }
     }
 }
@@ -103,6 +106,15 @@ fn catalog(spec: &CatalogSpec<'_>) -> String {
             ",\n      \"chatTemplate\": {}",
             json_escape(LLAMA_CHAT_TEMPLATE)
         )
+    } else {
+        String::new()
+    };
+    let blocker = match spec.blocker {
+        Some(blocker) => format!(",\n      \"blocker\": {}", json_escape(blocker)),
+        None => String::new(),
+    };
+    let min_vram = if spec.min_vram > 0 {
+        format!(",\n      \"minVramBytes\": {}", spec.min_vram)
     } else {
         String::new()
     };
@@ -136,13 +148,13 @@ fn catalog(spec: &CatalogSpec<'_>) -> String {
     "id": "{id}",
     "licenseId": "synthetic",
     "licenseUrl": "http://127.0.0.1/license",
-    "minRamBytes": {min_ram},
+    "minRamBytes": {min_ram}{min_vram},
     "quant": "f32",
     "repo": "fixture/tiny",
     "revision": "rev1",
     "sha256": "{weight_sha}",
     "sizeBytes": {weight_size},
-    "status": "{status}",
+    "status": "{status}"{blocker},
     "tags": ["instruct"]{template}{tokenizer}
   }}]
 }}
@@ -150,6 +162,8 @@ fn catalog(spec: &CatalogSpec<'_>) -> String {
         adapter = spec.adapter,
         id = spec.id,
         min_ram = spec.min_ram,
+        min_vram = min_vram,
+        blocker = blocker,
         weight_sha = spec.weight_sha,
         weight_size = spec.weight_size,
         status = spec.status,
@@ -233,7 +247,12 @@ fn answer(
             "Accept-Ranges: bytes\r\nContent-Range: bytes {start}-{end}/{}\r\n",
             bytes.len()
         );
-        return write_body(stream, "HTTP/1.0 206 Partial Content", &extra, &bytes[start..]);
+        return write_body(
+            stream,
+            "HTTP/1.0 206 Partial Content",
+            &extra,
+            &bytes[start..],
+        );
     }
     write_body(stream, "HTTP/1.0 200 OK", "Accept-Ranges: bytes\r\n", bytes)
 }
@@ -252,11 +271,21 @@ fn range_start(headers: &str) -> Option<usize> {
     None
 }
 
-fn write_all(stream: &mut TcpStream, status: &str, extra: &str, body: &[u8]) -> std::io::Result<()> {
+fn write_all(
+    stream: &mut TcpStream,
+    status: &str,
+    extra: &str,
+    body: &[u8],
+) -> std::io::Result<()> {
     write_body(stream, status, extra, body)
 }
 
-fn write_body(stream: &mut TcpStream, status: &str, extra: &str, body: &[u8]) -> std::io::Result<()> {
+fn write_body(
+    stream: &mut TcpStream,
+    status: &str,
+    extra: &str,
+    body: &[u8],
+) -> std::io::Result<()> {
     let head = format!(
         "{status}\r\n{extra}Content-Length: {}\r\nConnection: close\r\n\r\n",
         body.len()
@@ -299,6 +328,7 @@ fn pull_text(
         policy,
         accept_license: accept,
         ram_bytes: ram,
+        vram_bytes: None,
         token,
         build_root: &root,
     })
@@ -344,18 +374,62 @@ fn checked_in_catalog_parses_and_is_not_rewritten() {
             "llama-3.2-1b-instruct",
             "llama-3.2-1b-uncensored",
             "llama-3.2-3b-instruct",
-            "qwen3-4b-instruct",
-            "qwen3-8b-abliterated",
+            "llama-3.2-3b-uncensored",
+            "nemotron-3.5-bolt",
+            "granite-4.2-3b",
+            "qwen3.8-27b",
+            "gemma-4-12b",
+            "muse-glimmer-30b",
         ]
     );
     for row in &catalog.models {
         assert_eq!(row.sha256.len(), "sha256-".len() + 64, "{}", row.id);
         assert!(row.sha256.starts_with("sha256-"));
+        let reserved = if row.status == "runnable" { 8192 } else { 2048 };
+        assert_eq!(row.context_reservation, reserved, "{}", row.id);
     }
     assert_eq!(catalog.models[0].status, "runnable");
-    assert_eq!(catalog.models[3].status, "not_supported");
-    assert!(catalog.models[3].tokenizer.is_none());
-    assert_eq!(catalog.models[1].chat_template.as_deref(), Some(LLAMA_CHAT_TEMPLATE));
+    assert!(catalog.models[0].blocker.is_none());
+    assert_eq!(catalog.models[4].status, "not_supported");
+    assert!(catalog.models[4].tokenizer.is_none());
+    assert!(catalog.models[4].blocker.is_some());
+    assert_eq!(
+        catalog.models[1].chat_template.as_deref(),
+        Some(LLAMA_CHAT_TEMPLATE)
+    );
+    let gpu = 6144 * 1024 * 1024;
+    let ram = 40 << 30;
+    let bolt = catalog
+        .models
+        .iter()
+        .find(|row| row.id == "nemotron-3.5-bolt")
+        .unwrap();
+    let granite = catalog
+        .models
+        .iter()
+        .find(|row| row.id == "granite-4.2-3b")
+        .unwrap();
+    let gemma = catalog
+        .models
+        .iter()
+        .find(|row| row.id == "gemma-4-12b")
+        .unwrap();
+    assert_eq!(
+        display_status(bolt, Some(ram), Some(gpu)),
+        "too big for this machine"
+    );
+    assert_eq!(
+        display_status(gemma, Some(ram), Some(gpu)),
+        "too big for this machine"
+    );
+    assert_eq!(
+        display_status(granite, Some(ram), Some(gpu)),
+        "not supported yet"
+    );
+    assert_eq!(
+        display_status(&catalog.models[0], Some(ram), Some(gpu)),
+        "runnable"
+    );
 }
 
 #[test]
@@ -372,8 +446,15 @@ fn catalog_pull_pins_a_local_fixture() {
         &tok_sha,
         tok_size,
     ));
-    let outcome = pull_text(&home, &text, &policy_for(fixture.port), true, Some(8 << 30), None)
-        .unwrap_or_else(|err| panic!("{err}"));
+    let outcome = pull_text(
+        &home,
+        &text,
+        &policy_for(fixture.port),
+        true,
+        Some(8 << 30),
+        None,
+    )
+    .unwrap_or_else(|err| panic!("{err}"));
     assert_eq!(outcome.alias, "tiny-llama");
     assert_eq!(outcome.path, "models/tiny-llama/model.kmodel");
     assert!(outcome.model_image_root.starts_with("sha256-"));
@@ -412,7 +493,9 @@ fn bad_hash_deletes_staging_and_leaves_the_old_pin() {
     ));
     let err = pull_text(&home, &bad, &policy, true, Some(8 << 30), None).unwrap_err();
     assert_eq!(err.code, ErrorCode::ModelDigestMismatch);
-    assert!(err.message.contains("download digest does not match the catalog row"));
+    assert!(err
+        .message
+        .contains("download digest does not match the catalog row"));
     assert!(!home.join("staging/tiny-llama/tiny.gguf").exists());
     assert_eq!(
         fs::read(home.join("models/tiny-llama/model.kmodel")).unwrap(),
@@ -435,10 +518,18 @@ fn redirect_off_the_allowlist_downloads_nothing() {
         &tok_sha,
         tok_size,
     ));
-    let err = pull_text(&home, &text, &policy_for(fixture.port), true, Some(8 << 30), None)
-        .unwrap_err();
+    let err = pull_text(
+        &home,
+        &text,
+        &policy_for(fixture.port),
+        true,
+        Some(8 << 30),
+        None,
+    )
+    .unwrap_err();
     assert!(
-        err.message.contains("download host is not allowlisted: example.com"),
+        err.message
+            .contains("download host is not allowlisted: example.com"),
         "{err}"
     );
     assert!(!home.join("models").exists());
@@ -463,8 +554,13 @@ fn interrupted_download_resumes() {
     ));
     let err = pull_text(&home, &text, &policy, true, Some(8 << 30), None).unwrap_err();
     assert!(err.message.contains("download interrupted"), "{err}");
-    let partial = fs::metadata(home.join("staging/tiny-llama/tiny.gguf")).unwrap().len();
-    assert!(partial > 0 && partial < weight_size, "{partial} of {weight_size}");
+    let partial = fs::metadata(home.join("staging/tiny-llama/tiny.gguf"))
+        .unwrap()
+        .len();
+    assert!(
+        partial > 0 && partial < weight_size,
+        "{partial} of {weight_size}"
+    );
     let outcome = pull_text(&home, &text, &policy, true, Some(8 << 30), None)
         .unwrap_or_else(|err| panic!("{err}"));
     assert_eq!(outcome.alias, "tiny-llama");
@@ -483,9 +579,19 @@ fn declined_license_leaves_nothing_pinned() {
         "sha256-0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
         4,
     ));
-    let err = pull_text(&home, &text, &policy_for(fixture.port), false, Some(8 << 30), None)
-        .unwrap_err();
-    assert!(err.message.contains("license synthetic was not accepted"), "{err}");
+    let err = pull_text(
+        &home,
+        &text,
+        &policy_for(fixture.port),
+        false,
+        Some(8 << 30),
+        None,
+    )
+    .unwrap_err();
+    assert!(
+        err.message.contains("license synthetic was not accepted"),
+        "{err}"
+    );
     assert_eq!(fixture.hits.load(Ordering::SeqCst), 0);
     assert!(!home.join("knolo.infer.lock.json").exists());
     assert!(!home.join("models").exists());
@@ -506,10 +612,161 @@ fn unsupported_architecture_downloads_nothing() {
     spec.status = "not_supported";
     spec.adapter = "knolo.qwen.v1";
     let text = catalog(&spec);
-    let err = pull_text(&home, &text, &policy_for(fixture.port), true, Some(8 << 30), None)
-        .unwrap_err();
+    let err = pull_text(
+        &home,
+        &text,
+        &policy_for(fixture.port),
+        true,
+        Some(8 << 30),
+        None,
+    )
+    .unwrap_err();
     assert_eq!(err.code, ErrorCode::UnsupportedArchitecture);
     assert!(err.message.contains("is not supported yet"), "{err}");
+    assert_eq!(fixture.hits.load(Ordering::SeqCst), 0);
+    assert!(!home.join("models").exists());
+    let _ = fs::remove_dir_all(&home);
+}
+
+#[test]
+fn a_file_that_does_not_fit_refuses_before_the_architecture() {
+    let fixture = serve(HashMap::new(), false, false);
+    let home = scratch("vram");
+    let mut spec = CatalogSpec::llama(
+        "tiny-bolt",
+        "sha256-0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+        4,
+        "sha256-0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+        4,
+    );
+    spec.status = "not_supported";
+    spec.adapter = "knolo.nemotron.v1";
+    spec.min_vram = 22_018_326_528;
+    spec.blocker = Some("Mamba-2, LatentMoE, IQ2, and a vision encoder are not supported");
+    let text = catalog(&spec);
+    let catalog = load_catalog(&text).unwrap();
+    let root = build_root();
+    let err = pull_catalog_row(&PullRequest {
+        home: &home,
+        lock_path: &home.join("knolo.infer.lock.json"),
+        row: &catalog.models[0],
+        policy: &policy_for(fixture.port),
+        accept_license: true,
+        ram_bytes: Some(40 << 30),
+        vram_bytes: Some(6144 * 1024 * 1024),
+        token: None,
+        build_root: &root,
+    })
+    .unwrap_err();
+    assert_eq!(err.code, ErrorCode::InsufficientMemory);
+    assert!(
+        err.message
+            .contains("needs 22018326528 bytes and this GPU reports"),
+        "{err}"
+    );
+    assert!(!err.message.contains("not supported"), "{err}");
+    assert_eq!(fixture.hits.load(Ordering::SeqCst), 0);
+    assert!(!home.join("models").exists());
+    let _ = fs::remove_dir_all(&home);
+}
+
+#[test]
+fn runnable_context_accepts_8192_and_rejects_a_non_multiple() {
+    let spec = CatalogSpec::llama(
+        "tiny",
+        "sha256-0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+        4,
+        "sha256-0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+        4,
+    );
+    let base = catalog(&spec);
+    let wide = base.replace("\"contextReservation\": 32", "\"contextReservation\": 8192");
+    assert_eq!(
+        load_catalog(&wide).unwrap().models[0].context_reservation,
+        8192
+    );
+    let odd = base.replace("\"contextReservation\": 32", "\"contextReservation\": 8200");
+    let err = load_catalog(&odd).unwrap_err();
+    assert_eq!(err.code, ErrorCode::ContractInvalid);
+    assert!(
+        err.message
+            .contains("catalog context reservation must be a multiple of 16 from 16 to 8192"),
+        "{err}"
+    );
+    let above = base.replace(
+        "\"contextReservation\": 32",
+        "\"contextReservation\": 16384",
+    );
+    let above_err = load_catalog(&above).unwrap_err();
+    assert_eq!(above_err.code, ErrorCode::ContractInvalid);
+}
+
+#[test]
+fn an_npu_below_the_file_is_named_in_the_refusal() {
+    let mut spec = CatalogSpec::llama(
+        "tiny-bolt",
+        "sha256-0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+        4,
+        "sha256-0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+        4,
+    );
+    spec.status = "not_supported";
+    spec.adapter = "knolo.nemotron.v1";
+    spec.min_vram = 22_018_326_528;
+    spec.blocker = Some("Mamba-2, LatentMoE, IQ2, and a vision encoder are not supported");
+    let catalog = load_catalog(&catalog(&spec)).unwrap();
+    let err = admit_catalog_row(
+        &catalog.models[0],
+        Some(40 << 30),
+        Some(6144 * 1024 * 1024),
+        "NPU",
+    )
+    .unwrap_err();
+    assert_eq!(err.code, ErrorCode::InsufficientMemory);
+    assert!(
+        err.message
+            .contains("needs 22018326528 bytes and this NPU reports"),
+        "{err}"
+    );
+    assert!(!err.message.contains("not supported"), "{err}");
+}
+
+#[test]
+fn a_file_that_fits_names_the_architecture_blocker() {
+    let fixture = serve(HashMap::new(), false, false);
+    let home = scratch("granite");
+    let mut spec = CatalogSpec::llama(
+        "tiny-granite",
+        "sha256-0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+        4,
+        "sha256-0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+        4,
+    );
+    spec.status = "not_supported";
+    spec.adapter = "knolo.granite.v1";
+    spec.min_ram = 1;
+    spec.min_vram = 2_244_011_552;
+    spec.blocker = Some("Architecture is granite, not Llama");
+    let text = catalog(&spec);
+    let catalog = load_catalog(&text).unwrap();
+    let root = build_root();
+    let err = pull_catalog_row(&PullRequest {
+        home: &home,
+        lock_path: &home.join("knolo.infer.lock.json"),
+        row: &catalog.models[0],
+        policy: &policy_for(fixture.port),
+        accept_license: true,
+        ram_bytes: Some(40 << 30),
+        vram_bytes: Some(6144 * 1024 * 1024),
+        token: None,
+        build_root: &root,
+    })
+    .unwrap_err();
+    assert_eq!(err.code, ErrorCode::UnsupportedArchitecture);
+    assert!(
+        err.message.contains("Architecture is granite, not Llama"),
+        "{err}"
+    );
     assert_eq!(fixture.hits.load(Ordering::SeqCst), 0);
     assert!(!home.join("models").exists());
     let _ = fs::remove_dir_all(&home);
@@ -529,7 +786,10 @@ fn gated_row_without_a_token_downloads_nothing() {
     spec.gated = true;
     let text = catalog(&spec);
     let err = pull_text(&home, &text, &policy_for(fixture.port), true, None, None).unwrap_err();
-    assert!(err.message.contains("this model is gated; set HF_TOKEN"), "{err}");
+    assert!(
+        err.message.contains("this model is gated; set HF_TOKEN"),
+        "{err}"
+    );
     assert_eq!(fixture.hits.load(Ordering::SeqCst), 0);
     let _ = fs::remove_dir_all(&home);
 }
@@ -556,7 +816,9 @@ fn refresh_reports_a_changed_pointer_and_does_not_write_the_catalog() {
     let changes = refresh_catalog(&catalog, &policy_for(fixture.port), None).unwrap();
     assert_eq!(changes.len(), 1);
     assert_eq!(changes[0].id, "tiny-llama");
-    assert!(changes[0].remote_sha256.ends_with("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"));
+    assert!(changes[0]
+        .remote_sha256
+        .ends_with("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"));
     assert_eq!(fs::read(&catalog_path).unwrap(), before);
     assert_eq!(fs::read(&checked).unwrap(), checked_before);
 }
@@ -591,7 +853,8 @@ fn rm_refuses_a_path_outside_the_home_model_directory() {
     write_lockfile(&lock_path, &lock).unwrap();
     let err = remove_installed(&home, &lock_path, "outside").unwrap_err();
     assert!(
-        err.message.contains("rm refuses a path outside the home model directory"),
+        err.message
+            .contains("rm refuses a path outside the home model directory"),
         "{err}"
     );
     assert_eq!(fs::read(outside.join("model.kmodel")).unwrap(), b"keep");

@@ -1,11 +1,17 @@
 #!/usr/bin/env bash
-# Install the CPU release of knolo-infer and knolo-infer-worker.
-# The CUDA archive is published separately and is not selected here.
+# Install knolo-infer and knolo-infer-worker.
+# When nvidia-smi is on PATH and knolo-infer-linux-x86_64-cuda.tar.gz is in the
+# dist directory or the release, that archive is installed. If it is missing,
+# the script says so and installs the CPU archive. AMD and Huawei machines
+# stay on the CPU archive and name the ROCm or Ascend archive that is not published.
+# The release workflow does not build the CUDA archive.
 set -euo pipefail
 
 repo="${KNOLO_INFER_REPO:-HiveForensics-AI/knolo-inference}"
 prefix="${KNOLO_INFER_PREFIX:-${HOME}/.local}"
-asset="knolo-infer-linux-x86_64.tar.gz"
+cpu_asset="knolo-infer-linux-x86_64.tar.gz"
+cuda_asset="knolo-infer-linux-x86_64-cuda.tar.gz"
+asset="${cpu_asset}"
 version="${1:-latest}"
 
 if [[ "${EUID}" -eq 0 ]]; then
@@ -25,6 +31,40 @@ if [[ "${os}" != "Linux" || "${arch}" != "x86_64" ]]; then
   exit 1
 fi
 
+dist_base() {
+  if [[ -n "${KNOLO_INFER_DIST_URL:-}" ]]; then
+    printf '%s' "${KNOLO_INFER_DIST_URL%/}"
+  elif [[ "${version}" == "latest" ]]; then
+    printf '%s' "https://github.com/${repo}/releases/latest/download"
+  else
+    printf '%s' "https://github.com/${repo}/releases/download/${version}"
+  fi
+}
+
+# A dist directory is a file check. A release URL is a HEAD request.
+# The check stays inside `if`, so a missing file does not trip `set -e`.
+asset_present() {
+  local name="$1"
+  if [[ -n "${KNOLO_INFER_DIST_DIR:-}" ]]; then
+    [[ -f "${KNOLO_INFER_DIST_DIR}/${name}" ]]
+    return
+  fi
+  curl --fail --location --silent --show-error --head --output /dev/null "$(dist_base)/${name}"
+}
+
+# `nvidia-smi` wins when an AMD or Huawei tool is also on PATH.
+if command -v nvidia-smi >/dev/null 2>&1; then
+  if asset_present "${cuda_asset}"; then
+    asset="${cuda_asset}"
+  else
+    echo "knolo-infer: CUDA archive is not published yet; installing the CPU build" >&2
+  fi
+elif command -v amd-smi >/dev/null 2>&1 || command -v rocm-smi >/dev/null 2>&1; then
+  echo "knolo-infer: ROCm archive is not published yet; installing the CPU build" >&2
+elif command -v npu-smi >/dev/null 2>&1; then
+  echo "knolo-infer: Ascend archive is not published yet; installing the CPU build" >&2
+fi
+
 work=$(mktemp -d)
 cleanup() {
   rm -rf "${work}"
@@ -38,15 +78,7 @@ fetch() {
     cp "${KNOLO_INFER_DIST_DIR}/${name}" "${dest}"
     return
   fi
-  local base
-  if [[ -n "${KNOLO_INFER_DIST_URL:-}" ]]; then
-    base="${KNOLO_INFER_DIST_URL%/}"
-  elif [[ "${version}" == "latest" ]]; then
-    base="https://github.com/${repo}/releases/latest/download"
-  else
-    base="https://github.com/${repo}/releases/download/${version}"
-  fi
-  curl --fail --location --silent --show-error --output "${dest}" "${base}/${name}"
+  curl --fail --location --silent --show-error --output "${dest}" "$(dist_base)/${name}"
 }
 
 fetch "${asset}" "${work}/${asset}"
@@ -80,9 +112,18 @@ for bin in knolo-infer knolo-infer-worker; do
   fi
 done
 
-python3 - "${work}" <<'PY'
+# The archive still extracts the short names. SHA256SUMS records cpu/ or cuda/
+# so one file can list both builds.
+if [[ "${asset}" == "${cuda_asset}" ]]; then
+  bin_prefix="cuda"
+else
+  bin_prefix="cpu"
+fi
+
+python3 - "${work}" "${bin_prefix}" <<'PY'
 import hashlib, pathlib, sys
 work = pathlib.Path(sys.argv[1])
+prefix = sys.argv[2]
 sums = {}
 for line in (work / "SHA256SUMS").read_text().splitlines():
     line = line.strip()
@@ -90,10 +131,11 @@ for line in (work / "SHA256SUMS").read_text().splitlines():
         continue
     digest, name = line.split(None, 1)
     sums[name] = digest
-for name in ("knolo-infer", "knolo-infer-worker"):
+for short in ("knolo-infer", "knolo-infer-worker"):
+    name = f"{prefix}/{short}"
     if name not in sums:
         raise SystemExit(f"knolo-infer: SHA256SUMS has no entry for {name}")
-    got = hashlib.sha256((work / name).read_bytes()).hexdigest()
+    got = hashlib.sha256((work / short).read_bytes()).hexdigest()
     if got != sums[name]:
         raise SystemExit(f"knolo-infer: {name} checksum did not match")
 PY

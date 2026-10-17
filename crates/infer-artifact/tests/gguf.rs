@@ -3,10 +3,15 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use infer_artifact::{
-    encode_gguf, hash_regular_file, parse_gguf_bytes, read_verified_gguf, GgufArray, GgufMetadata,
-    GgufTensor, GgufTensorDraft, GgufTensorType, GgufValue, GgufValueType,
+    encode_gguf, gguf_eos_token_id, hash_regular_file, parse_gguf_bytes, read_gguf_metadata,
+    read_verified_gguf, sha256_prefixed, GgufArray, GgufMetadata, GgufTensor, GgufTensorDraft,
+    GgufTensorType, GgufValue, GgufValueType,
 };
-use infer_contracts::{DigestHex, ErrorCode, InferFailure};
+use infer_contracts::{
+    ArchitectureRefV1, ArtifactFileV1, DigestHex, EmbeddedArtifactV1, ErrorCode,
+    FixedPointSamplerV1, InferFailure, LicenseV1, ModelImageV1, ResourceRequirementsV1,
+    SpecialTokensV1, TensorSpecV1,
+};
 
 static TEMP: AtomicU64 = AtomicU64::new(0);
 
@@ -179,6 +184,130 @@ fn expect_encode(
     let err = encode_gguf(metadata, tensors).unwrap_err();
     assert_eq!(code_of(err.clone()), expected, "{err}");
     assert!(err.message.contains(fragment), "{err}");
+}
+
+fn eos_image(format: &str, path: &str, size: u64) -> ModelImageV1 {
+    ModelImageV1 {
+        name: "knolo/micro".into(),
+        variant: "f32".into(),
+        architecture: ArchitectureRefV1 {
+            family: "micro".into(),
+            adapter: "knolo.micro.v1".into(),
+        },
+        format: format.into(),
+        files: vec![ArtifactFileV1 {
+            path: path.into(),
+            size_bytes: size,
+            sha256: sha256_prefixed(b"fixture"),
+        }],
+        tokenizer: EmbeddedArtifactV1::new("infer-tokenizer", b"tok".to_vec()).unwrap(),
+        template: EmbeddedArtifactV1::new("infer-template", b"tpl".to_vec()).unwrap(),
+        special_tokens: SpecialTokensV1 {
+            bos: None,
+            eos: None,
+            pad: None,
+            unk: None,
+            additional: std::collections::BTreeMap::new(),
+        },
+        generation_defaults: FixedPointSamplerV1 {
+            temperature_micros: 0,
+            top_p_millionths: 1_000_000,
+            min_p_millionths: 0,
+            repetition_penalty_micros: 1_000_000,
+            presence_penalty_micros: 0,
+            frequency_penalty_micros: 0,
+            top_k: 1,
+            max_output_tokens: 8,
+        },
+        capabilities: vec!["text-generation".into()],
+        license: LicenseV1 {
+            id: "synthetic".into(),
+            acceptance_required: false,
+        },
+        sources: Vec::new(),
+        tensor_inventory: vec![TensorSpecV1 {
+            name: "weight".into(),
+            shape: vec![4],
+            dtype: "f32".into(),
+        }],
+        precisions: vec!["f32".into()],
+        requirements: ResourceRequirementsV1 {
+            minimum_ram_bytes: 1024,
+            minimum_vram_bytes: 0,
+        },
+        placement_hints: None,
+        extensions: std::collections::BTreeMap::new(),
+        signatures: Vec::new(),
+    }
+}
+
+fn weight_draft() -> GgufTensorDraft {
+    draft(
+        "weight",
+        GgufTensorType::F32,
+        &[4],
+        f32_payload(&[1.0, 2.0, 3.0, 4.0]),
+    )
+}
+
+#[test]
+fn gguf_eos_is_read_from_metadata_without_tensor_payloads() {
+    let eos = 128_009u32;
+    let full = encode_gguf(
+        &[architecture(), meta_u32("tokenizer.ggml.eos_token_id", eos)],
+        &[weight_draft()],
+    )
+    .unwrap();
+    let parsed = parse_gguf_bytes(&full).unwrap();
+    let cut = usize::try_from(parsed.data_start).unwrap();
+    assert!(cut < full.len());
+    let head = &full[..cut];
+    assert!(parse_gguf_bytes(head).is_err());
+
+    let dir = scratch();
+    let path = dir.join("weights.gguf");
+    fs::write(&path, head).unwrap();
+    let metadata = read_gguf_metadata(&path).unwrap();
+    assert!(metadata.iter().any(|item| {
+        item.key == "tokenizer.ggml.eos_token_id" && item.value == GgufValue::Uint32(eos)
+    }));
+    assert_eq!(
+        gguf_eos_token_id(&eos_image("gguf", "weights.gguf", head.len() as u64), &dir).unwrap(),
+        Some(eos)
+    );
+    assert_eq!(
+        gguf_eos_token_id(
+            &eos_image("safetensors", "weights.gguf", head.len() as u64),
+            &dir
+        )
+        .unwrap(),
+        None
+    );
+
+    let bare = encode_gguf(&[architecture()], &[weight_draft()]).unwrap();
+    fs::write(dir.join("bare.gguf"), &bare).unwrap();
+    assert_eq!(
+        gguf_eos_token_id(&eos_image("gguf", "bare.gguf", bare.len() as u64), &dir).unwrap(),
+        None
+    );
+
+    let bad = encode_gguf(
+        &[
+            architecture(),
+            meta_str("tokenizer.ggml.eos_token_id", "nope"),
+        ],
+        &[weight_draft()],
+    )
+    .unwrap();
+    fs::write(dir.join("bad.gguf"), &bad).unwrap();
+    let err =
+        gguf_eos_token_id(&eos_image("gguf", "bad.gguf", bad.len() as u64), &dir).unwrap_err();
+    assert_eq!(code_of(err.clone()), ErrorCode::ModelImageInvalid, "{err}");
+    assert!(
+        err.message
+            .contains("tokenizer.ggml.eos_token_id is not an integer"),
+        "{err}"
+    );
 }
 
 #[test]

@@ -2,7 +2,7 @@
 //!
 //! Decimals are accepted only where the route maps them onto fixed-point
 //! sampler fields. A decimal has one to six fractional digits and no exponent.
-//! Unknown fields fail.
+//! Unused object keys are ignored. `n` other than 1 still fails.
 
 use std::collections::BTreeMap;
 
@@ -40,17 +40,6 @@ pub(crate) fn parse_chat(input: &str) -> Result<ChatRequest, InferFailure> {
             "JSON value must be an object",
         ));
     };
-    if let Some(key) = object.keys().find(|key| {
-        !matches!(
-            key.as_str(),
-            "max_tokens" | "messages" | "model" | "n" | "seed" | "stream" | "temperature" | "top_p"
-        )
-    }) {
-        return Err(fail(
-            ErrorCode::ContractInvalid,
-            format!("unknown field: {key}"),
-        ));
-    }
     if let Some(n) = object.remove("n") {
         require_n(&n)?;
     }
@@ -78,9 +67,6 @@ pub(crate) fn parse_chat(input: &str) -> Result<ChatRequest, InferFailure> {
         Some(J::Int(value)) => Some(value),
         Some(_) => return Err(fail(ErrorCode::ContractInvalid, "seed must be an integer")),
     };
-    if !object.is_empty() {
-        return Err(fail(ErrorCode::ContractInvalid, "unknown field"));
-    }
     Ok(ChatRequest {
         model,
         messages,
@@ -296,15 +282,6 @@ fn expect_messages(value: Option<J>) -> Result<Vec<Turn>, InferFailure> {
                 "JSON value must be an object",
             ));
         };
-        if let Some(key) = message
-            .keys()
-            .find(|key| key.as_str() != "content" && key.as_str() != "role")
-        {
-            return Err(fail(
-                ErrorCode::ContractInvalid,
-                format!("unknown field: {key}"),
-            ));
-        }
         messages.push(Turn {
             role: expect_string(message.remove("role"), "role")?,
             content: expect_string(message.remove("content"), "content")?,
@@ -682,12 +659,28 @@ mod tests {
             chat(r#","top_p":0"#),
             chat(r#","max_tokens":1.5"#),
             chat(r#","n":2"#),
-            chat(r#","tools":[]"#),
             chat(r#","temperature":0.0000001"#),
         ];
         for body in cases {
             let err = parse_chat(&body).unwrap_err();
             assert_eq!(err.code, ErrorCode::ContractInvalid, "{body}: {err}");
         }
+    }
+
+    #[test]
+    fn unused_keys_are_ignored_and_n_other_than_one_fails() {
+        let parsed = parse_chat(
+            r#"{"frequency_penalty":0.5,"messages":[{"content":"hi","name":"ada","role":"user"}],"model":"micro","stop":"\n","stream_options":{"include_usage":true},"user":"ada"}"#,
+        )
+        .unwrap();
+        assert_eq!(parsed.model, "micro");
+        assert_eq!(parsed.messages[0].role, "user");
+        assert_eq!(parsed.messages[0].content, "hi");
+        assert!(!parsed.stream);
+        let err = parse_chat(&chat(r#","n":2"#)).unwrap_err();
+        assert_eq!(err.code, ErrorCode::ContractInvalid);
+        assert!(err.message.contains("n must be 1"), "{err}");
+        let missing = parse_chat(&chat(r#","n":0"#)).unwrap_err();
+        assert!(missing.message.contains("n must be 1"), "{missing}");
     }
 }

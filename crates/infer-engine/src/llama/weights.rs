@@ -126,23 +126,19 @@ pub fn kv_width() -> usize {
 pub fn decode_wide_tensors(
     tensors: &[TensorBytes],
     shape: &LlamaShape,
+    rope_freq_factors: Vec<f32>,
 ) -> Result<LlamaTensors, InferFailure> {
     let mut dense = BTreeMap::new();
     let mut packed = Vec::new();
     for tensor in tensors {
         if is_quant(&tensor.dtype) {
-            if tensor.name == "embed.weight" {
-                let values = decode_tensor_limited(tensor)?;
-                insert_dense(&mut dense, tensor.name.clone(), values)?;
-            } else {
-                packed.push(pack_tensor(tensor)?);
-            }
+            packed.push(pack_tensor(tensor)?);
         } else {
             let values = decode_tensor_limited(tensor)?;
             insert_dense(&mut dense, tensor.name.clone(), values)?;
         }
     }
-    require_dense(&dense, "embed.weight", shape.vocab * shape.hidden)?;
+    require_embed(&dense, &packed, shape)?;
     require_dense(&dense, "final_norm.weight", shape.hidden)?;
     if !packed.iter().any(|tensor| tensor.name == "lm_head.weight") {
         require_dense(&dense, "lm_head.weight", shape.vocab * shape.hidden)?;
@@ -201,7 +197,17 @@ pub fn decode_wide_tensors(
             "llama weights contain an unexpected tensor",
         ));
     }
-    Ok(LlamaTensors { dense, packed })
+    if !rope_freq_factors.is_empty() && rope_freq_factors.len() != shape.head_dim / 2 {
+        return Err(fail(
+            ErrorCode::ModelImageInvalid,
+            "rope frequency factors do not match the head dimension",
+        ));
+    }
+    Ok(LlamaTensors {
+        dense,
+        packed,
+        rope_freq_factors,
+    })
 }
 
 fn insert_dense(
@@ -216,6 +222,69 @@ fn insert_dense(
         ));
     }
     Ok(())
+}
+
+fn require_embed(
+    dense: &BTreeMap<String, Arc<[f32]>>,
+    packed: &[PackedTensor],
+    shape: &LlamaShape,
+) -> Result<(), InferFailure> {
+    if let Some(tensor) = packed.iter().find(|tensor| tensor.name == "embed.weight") {
+        if tensor.rows == shape.vocab && tensor.cols == shape.hidden {
+            return Ok(());
+        }
+        return Err(fail(
+            ErrorCode::ModelImageInvalid,
+            "tensor embed.weight does not match knolo.llama.v1",
+        ));
+    }
+    require_dense(dense, "embed.weight", shape.vocab * shape.hidden)
+}
+
+/// Dequantize one row of a packed matrix. The row is an integer number of
+/// quant blocks, so the result matches that row of `dequant_gguf` on the payload.
+pub fn dequant_packed_row(packed: &PackedTensor, index: usize) -> Result<Vec<f32>, InferFailure> {
+    if index >= packed.rows {
+        return Err(fail(
+            ErrorCode::ContractInvalid,
+            "embedding row is outside the table",
+        ));
+    }
+    let block = usize::try_from(packed.tensor_type.block_elements()).unwrap_or(0);
+    let width = usize::try_from(packed.tensor_type.type_size()).unwrap_or(0);
+    if block == 0 || width == 0 || packed.cols % block != 0 {
+        return Err(fail(
+            ErrorCode::ModelImageInvalid,
+            "embedding row is not a multiple of the quant block",
+        ));
+    }
+    let stride = packed.cols / block * width;
+    let start = index.checked_mul(stride).ok_or_else(|| {
+        fail(
+            ErrorCode::ModelImageInvalid,
+            "embedding row offset overflows",
+        )
+    })?;
+    let end = start.checked_add(stride).ok_or_else(|| {
+        fail(
+            ErrorCode::ModelImageInvalid,
+            "embedding row offset overflows",
+        )
+    })?;
+    let bytes = packed.bytes.get(start..end).ok_or_else(|| {
+        fail(
+            ErrorCode::ModelImageInvalid,
+            "embedding row is outside the packed payload",
+        )
+    })?;
+    let values = dequant_gguf(packed.tensor_type, bytes)?;
+    if values.len() != packed.cols {
+        return Err(fail(
+            ErrorCode::ModelImageInvalid,
+            "embedding row does not match knolo.llama.v1",
+        ));
+    }
+    Ok(values)
 }
 
 fn require_dense(
@@ -583,4 +652,117 @@ fn f32_to_f16_bits(value: f32) -> u16 {
         }
     }
     sign | (half_exp << 10) | half_mant
+}
+
+#[cfg(test)]
+mod packed_embed {
+    use infer_artifact::{GgufTensorType, TensorBytes};
+
+    use super::{decode_wide_tensors, dequant_packed_row};
+    use crate::dequant::dequant_gguf;
+    use crate::llama_shape::LlamaShape;
+
+    fn zeros(name: &str, shape: Vec<u32>) -> TensorBytes {
+        let len = shape.iter().map(|dim| *dim as usize).product::<usize>();
+        TensorBytes {
+            name: name.into(),
+            dtype: "f32".into(),
+            shape,
+            bytes: vec![0u8; len * 4],
+        }
+    }
+
+    fn q4_rows(rows: usize, cols: usize) -> Vec<u8> {
+        assert!(cols % 256 == 0);
+        let mut block = [0u8; 144];
+        block[0..2].copy_from_slice(&0x3c00u16.to_le_bytes());
+        for slot in 0..4 {
+            block[4 + slot] = 1;
+            block[8 + slot] = 1;
+        }
+        for lane in 0..128 {
+            block[16 + lane] = (lane as u8).wrapping_mul(3);
+        }
+        let mut bytes = Vec::with_capacity(rows * (cols / 256) * 144);
+        for row in 0..rows {
+            block[16] = row as u8;
+            for _ in 0..(cols / 256) {
+                bytes.extend_from_slice(&block);
+            }
+        }
+        bytes
+    }
+
+    fn wide_shape() -> LlamaShape {
+        LlamaShape {
+            vocab: 2,
+            hidden: 256,
+            layers: 1,
+            heads: 4,
+            kv_heads: 1,
+            head_dim: 64,
+            intermediate: 256,
+            rms_eps: 1e-5,
+            rope_theta: 10_000.0,
+            context: 16,
+        }
+    }
+
+    fn with_embed(embed: TensorBytes) -> Vec<TensorBytes> {
+        let mut tensors = vec![
+            embed,
+            zeros("final_norm.weight", vec![256]),
+            zeros("lm_head.weight", vec![2, 256]),
+            zeros("layers.0.attn_norm.weight", vec![256]),
+            zeros("layers.0.mlp_norm.weight", vec![256]),
+            zeros("layers.0.attn.q.weight", vec![256, 256]),
+            zeros("layers.0.attn.k.weight", vec![64, 256]),
+            zeros("layers.0.attn.v.weight", vec![64, 256]),
+            zeros("layers.0.attn.o.weight", vec![256, 256]),
+            zeros("layers.0.mlp.gate.weight", vec![256, 256]),
+            zeros("layers.0.mlp.up.weight", vec![256, 256]),
+            zeros("layers.0.mlp.down.weight", vec![256, 256]),
+        ];
+        tensors.sort_by(|left, right| left.name.cmp(&right.name));
+        tensors
+    }
+
+    #[test]
+    fn quantized_embed_stays_packed_and_the_row_matches_dequant() {
+        let payload = q4_rows(2, 256);
+        let decoded = decode_wide_tensors(
+            &with_embed(TensorBytes {
+                name: "embed.weight".into(),
+                dtype: "q4_k_m".into(),
+                shape: vec![2, 256],
+                bytes: payload.clone(),
+            }),
+            &wide_shape(),
+            Vec::new(),
+        )
+        .unwrap();
+        assert!(!decoded.dense.contains_key("embed.weight"));
+        let packed = decoded
+            .packed
+            .iter()
+            .find(|tensor| tensor.name == "embed.weight")
+            .unwrap();
+        let full = dequant_gguf(GgufTensorType::Q4_K, &payload).unwrap();
+        for index in 0..2 {
+            let row = dequant_packed_row(packed, index).unwrap();
+            assert_eq!(row.as_slice(), &full[index * 256..(index + 1) * 256]);
+        }
+
+        let dense = decode_wide_tensors(
+            &with_embed(zeros("embed.weight", vec![2, 256])),
+            &wide_shape(),
+            Vec::new(),
+        )
+        .unwrap();
+        assert!(dense.dense.contains_key("embed.weight"));
+        assert!(!dense
+            .packed
+            .iter()
+            .any(|tensor| tensor.name == "embed.weight"));
+    }
 }

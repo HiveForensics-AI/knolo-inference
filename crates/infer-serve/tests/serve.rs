@@ -11,7 +11,7 @@ use std::time::Duration;
 use infer_artifact::{
     hash_current_executable, new_lockfile, pin_alias, verify_image, write_lockfile, ErrorCode,
 };
-use infer_contracts::ChatMessageV1;
+use infer_contracts::{ChatMessageV1, ModelImageV1};
 use infer_engine::{
     cpu_placement, load_verified_micro, micro_kv_layout, write_llama_model, write_synthetic_model,
     ArchitectureAdapter, CpuScheduler, MicroAdapter, PagedKv, ReferenceF32Backend, ScheduleRequest,
@@ -121,9 +121,20 @@ fn alone(
 ) -> (Vec<u32>, String) {
     let bytes = fs::read(dir.join("micro.kmodel")).unwrap();
     let verification = verify_image(&bytes).unwrap();
-    let sampler = build_sampler(&verification.image, generation).unwrap();
+    run_prompt(dir, &verification.image, content, generation, None, class)
+}
+
+fn run_prompt(
+    dir: &Path,
+    image: &ModelImageV1,
+    content: &str,
+    generation: &GenerationRequest,
+    gguf_eos: Option<u32>,
+    class: ServiceClass,
+) -> (Vec<u32>, String) {
+    let sampler = build_sampler(image, generation, gguf_eos).unwrap();
     let compiled = compile_model_prompt(
-        &verification.image,
+        image,
         vec![ChatMessageV1 {
             role: "user".into(),
             content: content.into(),
@@ -164,6 +175,40 @@ fn alone(
         .find(|result| result.request_id == "alone")
         .unwrap();
     (result.tokens.clone(), result.finish_reason.clone())
+}
+
+#[test]
+fn gguf_eos_fills_an_empty_image_field_and_stops_generation() {
+    let dir = scratch();
+    let bytes = fs::read(dir.join("micro.kmodel")).unwrap();
+    let mut image = verify_image(&bytes).unwrap().image;
+    let fixture = 7u32;
+    image.special_tokens.eos = None;
+    let from_gguf = build_sampler(&image, &greedy(8), Some(fixture)).unwrap();
+    assert_eq!(from_gguf.eos_token_ids, vec![fixture]);
+
+    image.special_tokens.eos = Some(2);
+    let image_wins = build_sampler(&image, &greedy(8), Some(fixture)).unwrap();
+    assert_eq!(image_wins.eos_token_ids, vec![2]);
+
+    image.special_tokens.eos = None;
+    let (probed, probed_finish) =
+        run_prompt(&dir, &image, "hi", &greedy(1), None, ServiceClass::Standard);
+    assert_eq!(probed_finish, "length");
+    assert_eq!(probed.len(), 1);
+    let stop_id = probed[0];
+    let plan = build_sampler(&image, &greedy(8), Some(stop_id)).unwrap();
+    assert_eq!(plan.eos_token_ids, vec![stop_id]);
+    let (stopped, finish) = run_prompt(
+        &dir,
+        &image,
+        "hi",
+        &greedy(2),
+        Some(stop_id),
+        ServiceClass::Standard,
+    );
+    assert_eq!(stopped, vec![stop_id]);
+    assert_eq!(finish, "stop");
 }
 
 fn listening_tcp_inodes(pid: u32) -> Vec<String> {
@@ -757,11 +802,24 @@ fn openai_completion_matches_the_scheduler_and_rejects_unknown_fields() {
         addr,
         "POST",
         "/v1/chat/completions",
-        Some(r#"{"messages":[{"content":"hi","role":"user"}],"model":"micro","tools":[]}"#),
+        Some(
+            r#"{"max_tokens":2,"messages":[{"content":"hi","name":"ada","role":"user"}],"model":"micro","tools":[]}"#,
+        ),
     );
-    assert_eq!(tools.status, 400, "{}", tools.body);
-    assert_eq!(tools.body["error"]["code"], "CONTRACT_INVALID");
-    assert_eq!(tools.body["error"]["type"], "invalid_request_error");
+    assert_eq!(tools.status, 200, "{}", tools.body);
+    assert_eq!(
+        tools.body["choices"][0]["message"]["content"],
+        native.body["output"]["text"]
+    );
+    let several = exchange(
+        addr,
+        "POST",
+        "/v1/chat/completions",
+        Some(r#"{"messages":[{"content":"hi","role":"user"}],"model":"micro","n":2}"#),
+    );
+    assert_eq!(several.status, 400, "{}", several.body);
+    assert_eq!(several.body["error"]["code"], "CONTRACT_INVALID");
+    assert_eq!(several.body["error"]["type"], "invalid_request_error");
     let method = exchange(addr, "GET", "/v1/chat/completions", None);
     assert_eq!(method.status, 405, "{}", method.body);
     supervisor.shutdown();
@@ -1199,7 +1257,7 @@ fn traces_follow_the_request_and_omit_content() {
     let (expected, finish) = alone(&dir, "south", &generation, ServiceClass::Standard);
     let bytes = fs::read(dir.join("micro.kmodel")).unwrap();
     let verification = verify_image(&bytes).unwrap();
-    let sampler = build_sampler(&verification.image, &generation).unwrap();
+    let sampler = build_sampler(&verification.image, &generation, None).unwrap();
     let compiled = compile_model_prompt(
         &verification.image,
         vec![ChatMessageV1 {

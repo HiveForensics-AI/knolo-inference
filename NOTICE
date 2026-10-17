@@ -21,4 +21,4 @@ reimplements that subset. It does not vendor @knolo/core.
 
 The micro tokenizer and the chat-template subset are in-tree. minijinja is not linked. Hugging Face `tokenizers` 0.21 (Apache-2.0) encodes `huggingface.tokenizers.v1`. It does not execute remote code.
 
-The default build does not link CUDA. The `infer-native` feature `cuda` links candle-core 0.8.4's CUDA backend, which links cudarc 0.13.9 (MIT OR Apache-2.0) and the NVIDIA CUDA toolkit (cuBLAS, nvRTC, and the CUDA runtime). `infer-receipt`, `infer-serve`, and `infer-cli` pass that feature through. It is not enabled by `cargo test --workspace`. The default `knolo-infer-worker` does not link it.
+The default build does not link CUDA. The `infer-native` feature `cuda` links candle-core 0.8.4's CUDA backend, which links cudarc 0.13.9 (MIT OR Apache-2.0) and the NVIDIA CUDA toolkit (cuBLAS, nvRTC, and the CUDA runtime). A Llama wider than the llama-tiny fixture uses that backend's quantized matmul and keeps the GGUF payload packed. `infer-receipt`, `infer-serve`, and `infer-cli` pass that feature through. It is not enabled by `cargo test --workspace`. The default `knolo-infer-worker` does not link it.

@@ -7,9 +7,9 @@ use std::io::{self, IsTerminal, Write};
 use std::path::PathBuf;
 
 use infer_artifact::{
-    checked_in_catalog, display_status, find_row, gpu_label, hash_current_executable,
-    list_installed, load_catalog_file, pull_alias, pull_catalog_row, refresh_catalog,
-    remove_installed, Catalog, CatalogRow, FetchPolicy, PullRequest,
+    admit_catalog_row, checked_in_catalog, display_status, find_row, gpu_label,
+    hash_current_executable, list_installed, load_catalog_file, pull_alias, pull_catalog_row,
+    refresh_catalog, remove_installed, Catalog, CatalogRow, FetchPolicy, PullRequest,
 };
 use infer_contracts::{fail, ErrorCode, InferFailure};
 use infer_receipt::default_home;
@@ -36,11 +36,12 @@ pub fn library_command(flags: &Flags) -> Result<(), InferFailure> {
     }
     let rows = filter_rows(&catalog, &flags.tags);
     let ram = mem_total();
+    let (vram, _) = accelerator_memory();
     if flags.json {
-        print_library_json(&rows, ram);
+        print_library_json(&rows, ram, vram);
         return Ok(());
     }
-    print_library_table(&rows, ram);
+    print_library_table(&rows, ram, vram);
     if !io::stdin().is_terminal() {
         return Ok(());
     }
@@ -64,7 +65,10 @@ pub fn library_command(flags: &Flags) -> Result<(), InferFailure> {
         .parse()
         .map_err(|_| usage(format!("library choice {choice} is not a number")))?;
     let row = rows.get(number.wrapping_sub(1)).ok_or_else(|| {
-        usage(format!("library choice {number} is outside 1..={}", rows.len()))
+        usage(format!(
+            "library choice {number} is outside 1..={}",
+            rows.len()
+        ))
     })?;
     pull_row(flags, row)
 }
@@ -208,6 +212,11 @@ pub fn pull_command(flags: &Flags) -> Result<(), InferFailure> {
 }
 
 fn pull_row(flags: &Flags, row: &CatalogRow) -> Result<(), InferFailure> {
+    let ram = mem_total();
+    let (vram, noun) = accelerator_memory();
+    // Memory and architecture both refuse before the license prompt, so a
+    // file that cannot load never opens a connection.
+    admit_catalog_row(row, ram, vram, noun)?;
     let accept = accept_license(flags, row)?;
     let home = home_dir(flags)?;
     let lock = flags
@@ -223,7 +232,8 @@ fn pull_row(flags: &Flags, row: &CatalogRow) -> Result<(), InferFailure> {
         row,
         policy: &policy,
         accept_license: accept,
-        ram_bytes: mem_total(),
+        ram_bytes: ram,
+        vram_bytes: vram,
         token: token.as_deref(),
         build_root: &build,
     })?;
@@ -305,30 +315,36 @@ fn refresh_command(flags: &Flags, catalog: &Catalog) -> Result<(), InferFailure>
     Ok(())
 }
 
-fn print_library_json(rows: &[&CatalogRow], ram: Option<u64>) {
+fn print_library_json(rows: &[&CatalogRow], ram: Option<u64>, vram: Option<u64>) {
     let models: Vec<_> = rows
         .iter()
         .map(|row| {
-            serde_json::json!({
+            let mut value = serde_json::json!({
                 "displayName": row.display_name,
-                "gpu": gpu_label(row),
+                "gpu": gpu_label(row, cfg!(feature = "cuda")),
                 "id": row.id,
                 "licenseId": row.license_id,
                 "minRamBytes": row.min_ram_bytes,
+                "minVramBytes": row.min_vram_bytes,
                 "quant": row.quant,
                 "sizeBytes": row.size_bytes,
-                "status": display_status(row, ram),
+                "status": display_status(row, ram, vram),
                 "tags": row.tags,
-            })
+            });
+            if let Some(blocker) = &row.blocker {
+                value["blocker"] = serde_json::Value::String(blocker.clone());
+            }
+            value
         })
         .collect();
     println!(
         "{}",
-        serde_json::to_string_pretty(&serde_json::json!({ "models": models })).expect("library json")
+        serde_json::to_string_pretty(&serde_json::json!({ "models": models }))
+            .expect("library json")
     );
 }
 
-fn print_library_table(rows: &[&CatalogRow], ram: Option<u64>) {
+fn print_library_table(rows: &[&CatalogRow], ram: Option<u64>, vram: Option<u64>) {
     if rows.is_empty() {
         println!("no models");
         return;
@@ -338,11 +354,14 @@ fn print_library_table(rows: &[&CatalogRow], ram: Option<u64>) {
             "{:>3}  {:<28} {:<22} {:<8} {:<16} {}",
             index + 1,
             row.id,
-            display_status(row, ram),
+            display_status(row, ram, vram),
             row.quant,
-            gpu_label(row),
+            gpu_label(row, cfg!(feature = "cuda")),
             row.tags.join(",")
         );
+        if let Some(blocker) = &row.blocker {
+            println!("     {blocker}");
+        }
     }
 }
 
@@ -350,7 +369,10 @@ fn filter_rows<'a>(catalog: &'a Catalog, tags: &[String]) -> Vec<&'a CatalogRow>
     catalog
         .models
         .iter()
-        .filter(|row| tags.iter().all(|tag| row.tags.iter().any(|have| have == tag)))
+        .filter(|row| {
+            tags.iter()
+                .all(|tag| row.tags.iter().any(|have| have == tag))
+        })
         .collect()
 }
 
@@ -424,6 +446,16 @@ fn mem_total() -> Option<u64> {
         return Some(kb.saturating_mul(1024));
     }
     None
+}
+
+/// First accelerator's total memory. Huawei is named an NPU in the refusal.
+/// A missing tool leaves the VRAM check unused, and the RAM check still applies.
+fn accelerator_memory() -> (Option<u64>, &'static str) {
+    match infer_engine::first_accelerator_memory() {
+        Some(memory) if memory.vendor == "huawei" => (Some(memory.total_bytes), "NPU"),
+        Some(memory) => (Some(memory.total_bytes), "GPU"),
+        None => (None, "GPU"),
+    }
 }
 
 fn usage(message: impl Into<String>) -> InferFailure {

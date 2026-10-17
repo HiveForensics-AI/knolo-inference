@@ -18,7 +18,8 @@ pub use infer_engine::{
 };
 pub use infer_native::CANDLE_CPU_VERSION;
 pub use run::{
-    plan_pinned, replay_pinned, run_pinned, PlacementSummary, ReplayOptions, RunOptions, RunOutput,
+    plan_pinned, replay_pinned, run_pinned, ChatSession, PlacementSummary, ReplayOptions,
+    RunOptions, RunOutput,
 };
 pub use verify::{
     request_id_of, verify_receipt_bytes, verify_receipt_evidence, verify_receipt_journal,
